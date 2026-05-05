@@ -12,7 +12,7 @@ export default async function handler(req, res) {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                model: "google/gemini-2.0-flash-lite-preview-02-05:free",
+                model: "nvidia/nemotron-3-super-120b-a12b:free",
                 messages: [
                     { 
                         role: "system", 
