@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hybrid Chatbot</title>
+    <style>
+        :root { --glass: rgba(255, 255, 255, 0.1); --primary: #ff4757; }
+        body { 
+            margin: 0; font-family: 'Segoe UI', sans-serif; 
+            background: #0f172a; color: white; height: 100vh;
+            display: flex; flex-direction: column;
+        }
+        /* Glassmorphism UI */
+        .chat-box { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+        .msg { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 0.95rem; backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .u { align-self: flex-end; background: #3b82f6; border-bottom-right-radius: 2px; }
+        .g { align-self: flex-start; background: var(--glass); border-bottom-left-radius: 2px; }
+        .status { font-size: 0.65rem; opacity: 0.5; margin-left: 5px; }
+
+        .input-box { padding: 15px; display: flex; gap: 10px; background: rgba(0,0,0,0.2); border-top: 1px solid rgba(255,255,255,0.1); }
+        input { flex: 1; background: var(--glass); border: 1px solid rgba(255,255,255,0.2); padding: 12px; border-radius: 25px; color: white; outline: none; }
+        button { background: var(--primary); border: none; padding: 10px 20px; border-radius: 20px; color: white; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <div class="chat-box" id="chat">
+        <div class="msg g">Hii! Kuch puchna hai?</div>
+    </div>
+
+    <div class="input-box">
+        <input type="text" id="in" placeholder="Type here..." onkeypress="if(event.key==='Enter') send()">
+        <button onclick="send()">Send</button>
+    </div>
+
+<script>
+    let localData = [];
+
+    // JSON Load Karo
+    fetch('chats_from_html.json')
+        .then(r => r.json())
+        .then(d => localData = d);
+
+    async function send() {
+        const input = document.getElementById('in');
+        const val = input.value.trim();
+        if(!val) return;
+
+        addMsg(val, 'u');
+        input.value = '';
+
+        // 1. Local Search
+        const match = localData.find(i => val.toLowerCase().includes(i.u.toLowerCase()));
+        
+        if(match) {
+            setTimeout(() => addMsg(match.g, 'g', 'Local'), 500);
+        } else {
+            // 2. API Fallback (Vercel Serverless Function)
+            addMsg("...", 'g', 'AI', 'loader');
+            try {
+                const res = await fetch('/api/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: val })
+                });
+                const data = await res.json();
+                document.getElementById('loader').remove();
+                addMsg(data.reply, 'g', 'AI');
+            } catch (e) {
+                document.getElementById('loader').innerText = "Error ho gaya!";
+            }
+        }
+    }
+
+    function addMsg(txt, cls, src='', id='') {
+        const div = document.createElement('div');
+        div.className = `msg ${cls}`;
+        if(id) div.id = id;
+        div.innerHTML = `${txt} ${src ? `<span class="status">(${src})</span>` : ''}`;
+        document.getElementById('chat').appendChild(div);
+        document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
+    }
+</script>
+</body>
+</html>
+  
