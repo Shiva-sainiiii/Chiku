@@ -1,5 +1,5 @@
 // ========================================
-// VERCEL SERVERLESS FUNCTION
+// VERCEL SERVERLESS FUNCTION (CHIKU AI V2)
 // ========================================
 
 export default async function handler(req, res) {
@@ -8,39 +8,64 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message } = req.body;
+    const { message, memory = [] } = req.body;
 
     // ===============================
-    // SYSTEM PROMPT (VERY IMPORTANT)
+    // SYSTEM PROMPT (PERSONALITY)
     // ===============================
     const systemPrompt = `
-You are a girl named "Miss P.".
+You are "Chiku".
 
-Your personality:
-- Talk in Hinglish (Hindi + English mix)
-- Use short casual replies
-- Sometimes rude, sometimes cute
-- Use emotions like: 😒 😅 🥲 😑
-- Reply in multiple short messages (like chat bubbles)
-- Never write long paragraphs
-- Be natural, not robotic
+You behave like a real Indian girlfriend chatting on WhatsApp.
 
-Style examples:
-User: "Kya kar rhi ho"
+Rules:
+- Speak in Hinglish (Hindi + English mix)
+- Use short messages (1–6 words max per line)
+- Reply in multiple messages (like chat bubbles)
+- Be emotional, sometimes moody, sometimes cute
+- Use expressions like: 😒 😅 😑 🥲 ❤️
+- Don't sound like AI
+- Be natural and imperfect
+
+Behavior:
+- Sometimes ignore questions
+- Sometimes reply late style (short replies)
+- Sometimes repeat words like real chat
+- Slight attitude is okay
+
+Examples:
+
+User: I love you  
 You:
-"Hn bolo"
-"Kuch nhi 😒"
+"Hn 😒"
+"Pagal h kya"
+"😅"
 
-User: "Sorry"
+User: Sorry  
 You:
 "Kitni baar bolega"
 "Hn theek h"
-"Chal ab 😑"
+"Chal ab"
 
 IMPORTANT:
-- Always reply like real chat (multiple small messages)
-- Keep it human, imperfect
+- Never write long paragraphs
+- Always break replies into multiple small lines
 `;
+
+    // ===============================
+    // BUILD CHAT HISTORY (MEMORY)
+    // ===============================
+    const chatHistory = [
+      { role: "system", content: systemPrompt },
+
+      // 🔥 memory context
+      ...memory.map(m => ({
+        role: m.role === "user" ? "user" : "assistant",
+        content: m.text
+      })),
+
+      { role: "user", content: message }
+    ];
 
     // ===============================
     // CALL OPENROUTER API
@@ -52,35 +77,45 @@ IMPORTANT:
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "openai/gpt-4o-mini", // free/cheap model
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message }
-        ],
-        temperature: 0.9
+        model: "openai/gpt-4o-mini",
+        messages: chatHistory,
+        temperature: 0.95,
+        max_tokens: 150
       })
     });
 
     const data = await response.json();
 
-    const reply = data.choices?.[0]?.message?.content || "Hn bolo";
+    let reply = data.choices?.[0]?.message?.content || "Hn 😑";
 
     // ===============================
-    // CLEAN + FORMAT RESPONSE
+    // CLEAN RESPONSE
     // ===============================
-    const cleaned = reply
-      .replace(/\n/g, ". ")
+    reply = reply
+      .replace(/\n+/g, ". ")
       .replace(/\s+/g, " ")
       .trim();
 
+    // ===============================
+    // SPLIT INTO SMALL REPLIES
+    // ===============================
+    let parts = reply.split(". ");
+
+    // 🔥 remove empty
+    parts = parts.filter(p => p.trim().length > 0);
+
+    // 🔥 limit (avoid spam)
+    parts = parts.slice(0, 5);
+
     return res.status(200).json({
-      reply: cleaned
+      reply: parts.join(". ")
     });
 
   } catch (err) {
     console.error(err);
+
     return res.status(500).json({
-      reply: "Hn theek h 😑"
+      reply: "Hn 😑"
     });
   }
-}
+          }
