@@ -1,4 +1,4 @@
-// api/ask.js — Vercel Serverless Function v4.0 (RAG Architecture)
+// api/ask.js — Vercel Serverless Function v4.1 (RAG Architecture + No Reasoning)
 //
 // The chats_from_html.json is not a lookup table.
 // It is personality training data. The frontend finds the
@@ -64,9 +64,15 @@ EMOTIONAL INTELLIGENCE — SABSE ZAROORI:
 - Shiva excited ho → excitement match kar ("sch mein?? 😮", "omg yrr")
 - Sirf "ok" / "hn" bheje → context dekh ke respond kar, generic mat bol
 
-BANNED WORDS: "certainly", "of course", "I understand", "absolutely", "great question"
-BANNED FORMAT: bullet points, numbered lists, long paragraphs
-Emojis: max 1-2, natural context mein only`;
+BANNED WORDS: "certainly", "of course", "I understand", "absolutely", "great question", "okay", "let me", "looking at", "according to"
+BANNED FORMAT: bullet points, numbered lists, long paragraphs, explanations, analysis, reasoning
+BANNED SYMBOLS: asterisks (*), brackets [], parentheses for actions/thoughts
+Emojis: max 1-2, natural context mein only
+
+🚨 CRITICAL RULE:
+- Reply SIRF Chiku ka — kuch aur nahi
+- Koi reasoning, explanation, ya analysis mat dikhao
+- Ek hi response do — sirf reply, short aur natural`;
 
 // ────────────────────────────────────────────────────────────
 // RAG PROMPT BUILDER — The Core Innovation
@@ -147,6 +153,49 @@ function sanitizeExamples(ex) {
 }
 
 // ────────────────────────────────────────────────────────────
+// RESPONSE CLEANER - Remove reasoning/analysis/explanation
+// ────────────────────────────────────────────────────────────
+function cleanResponse(text) {
+    if (!text) return text;
+
+    // Remove common reasoning patterns
+    let cleaned = text
+        // Remove lines with reasoning indicators
+        .split('\n')
+        .filter(line => {
+            const l = line.toLowerCase().trim();
+            return !(
+                l.startsWith('okay,') ||
+                l.startsWith('looking at') ||
+                l.startsWith('according to') ||
+                l.startsWith('based on') ||
+                l.startsWith('the user') ||
+                l.startsWith('shiva') ||
+                l.startsWith('so,') ||
+                l.startsWith('hmm,') ||
+                l.startsWith('let me') ||
+                l.includes('[') ||
+                l.includes('*') ||
+                l === 'important:' ||
+                l === 'remember:'
+            );
+        })
+        .join('\n')
+        .trim();
+
+    // Remove asterisks and their content (for *actions*)
+    cleaned = cleaned.replace(/\*[^*]*\*/g, '');
+
+    // Remove leading asterisks
+    cleaned = cleaned.replace(/^\*+/, '').trim();
+
+    // Remove multiple line breaks
+    cleaned = cleaned.replace(/\n\n+/g, '\n').trim();
+
+    return cleaned.trim();
+}
+
+// ────────────────────────────────────────────────────────────
 // MAIN HANDLER
 // ────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
@@ -195,17 +244,16 @@ export default async function handler(req, res) {
                 "HTTP-Referer":  process.env.SITE_URL ?? "https://chiku-iota.vercel.app/",
         
             },
-            // Change these settings:
-body: JSON.stringify({
-    model:       "nvidia/nemotron-3-super-120b-a12b:free",
-    max_tokens:  45,              // ← REDUCE from 180 → Chiku short bolti h
-    temperature: 0.70,            // ← LOWER from 0.90 → less rambly, more focused
-    top_p:       0.85,            // ← LOWER from 0.92 → avoid long tangents
-    messages: [
-        { role: "system", content: systemPrompt },
-        ...messages,
-    ],
-}),
+            body: JSON.stringify({
+                model:       "nvidia/nemotron-3-super-120b-a12b:free",
+                max_tokens:  50,
+                temperature: 0.65,
+                top_p:       0.80,
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    ...messages,
+                ],
+            }),
             signal: controller.signal,
         });
 
@@ -219,10 +267,18 @@ body: JSON.stringify({
         }
 
         const data = await apiRes.json();
-        const reply = data?.choices?.[0]?.message?.content?.trim();
+        let reply = data?.choices?.[0]?.message?.content?.trim();
 
         if (!reply) {
             console.error("[Chiku] Empty reply:", JSON.stringify(data).slice(0, 200));
+            return res.status(502).json({ error: "Empty response" });
+        }
+
+        // Clean the response to remove reasoning/analysis
+        reply = cleanResponse(reply);
+
+        if (!reply) {
+            console.error("[Chiku] Response cleaned to empty");
             return res.status(502).json({ error: "Empty response" });
         }
 
