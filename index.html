@@ -436,9 +436,9 @@
 
 <script>
 /* ============================================================
-   CHIKU CHATBOT — PRODUCTION ENGINE v2.0
-   Architecture: Local-First (Fuzzy) → OpenRouter API Fallback
-   Author: Built for Shiva 🔥
+   CHIKU CHATBOT — SMART ENGINE v3.0
+   Fixes: Emoji matching, garbage filter, anti-repeat,
+          intent-aware scoring, raised threshold
    ============================================================ */
 'use strict';
 
@@ -446,28 +446,79 @@
 // MODULE: STATE
 // ────────────────────────────────────────────────────────────
 const State = {
-    dataset:      [],          // Loaded JSON data
-    wordIndex:    new Map(),   // Inverted word index for fast candidate search
-    indexed:      false,       // Is index built?
-    isBusy:       false,       // Prevents double-send
-    memBuffer:    [],          // Conversation memory for AI context (last N pairs)
-    MAX_MEM:      5,           // How many message pairs to remember
+    dataset:      [],
+    wordIndex:    new Map(),
+    indexed:      false,
+    isBusy:       false,
+    memBuffer:    [],
+    MAX_MEM:      5,
+
+    // Anti-repetition system
+    usedSet:      new Set(),   // Set of recently used dataset indices
+    usedQueue:    [],          // FIFO queue for eviction
+    MAX_USED:     25,          // Remember last 25 used responses
+
+    // Context tracking
+    lastChikuMsg: '',          // Prevent exact repeat of last reply
+    lastUserIntent: null,      // Track emotional context
 };
 
 // ────────────────────────────────────────────────────────────
+// MODULE: TEXT UTILITIES
+// ────────────────────────────────────────────────────────────
+
+// Strip emoji & unicode symbols before matching
+// WHY: "Hii Chiku 💕" was matching wrong entry because 💕 
+//      was treated as a word character in some normalizers.
+function stripEmoji(str) {
+    return str
+        .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+        .replace(/[\u{2600}-\u{27BF}]/gu, '')
+        .replace(/[\u{FE00}-\u{FEFF}]/gu, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// Intent detection — understands WHAT kind of message this is
+// WHY: A greeting should match a greeting. A question should 
+//      match a question. Without this, "Hii" matches random entries.
+function detectIntent(text) {
+    const t = text.toLowerCase().trim();
+    const words = t.split(/\s+/);
+    return {
+        isGreeting:   /^(hii|hi|hlo|hello|hey|hiya|hiii|helo|hii chiku|hey chiku)/.test(t),
+        isQuestion:   t.endsWith('?') || /^(kya|kyu|kyun|kaisa|kaisi|kese|kitna|kitni|kab|kahan|kon|bata na|suno|kis|kisne|kiska)/.test(t),
+        isSad:        /\b(sad|ro|rona|dukhi|bura|takleef|dard|hurt|miss|akela|lonely|pareshan)\b/.test(t),
+        isAngry:      /\b(gussa|angry|naraz|mat karo|chup|shut|ugh|ugh)\b/.test(t),
+        isLove:       /\b(pyaar|love|miss|chahta|chahti|dil|heart|cute|sweet)\b/.test(t),
+        isShortAck:   words.length <= 2 && /^(ok|okay|okk|hn|ha|hm|thik|theek|acha|aacha|hmm|haan|na|nhi|bas|done|fine)$/.test(words[0]),
+        wordCount:    words.length,
+    };
+}
+
+// Garbage response filter
+// WHY: Dataset has low-quality entries like "??", ".", "❤" etc.
+//      These should NEVER be returned as Chiku's reply.
+function isGarbageResponse(text) {
+    if (!text) return true;
+    const t = stripEmoji(text).trim();
+    if (t.length < 2) return true;                        // Too short
+    if (/^[\?\.\!\*\-\_]+$/.test(t)) return true;        // Only punctuation: "??" ".." etc
+    if (/^(hn|ha|hm|ok|na|bas|\.)$/i.test(t)) return true; // Single generic ack
+    return false;
+}
+
+// ────────────────────────────────────────────────────────────
 // MODULE: FUZZY ENGINE
-// WHY: Handles Hinglish shorthand ("kya kr rhi ho" ≈ "Kya kar rahi ho")
-//      using two-stage scoring: word overlap + Levenshtein distance
 // ────────────────────────────────────────────────────────────
 const FuzzyEngine = (() => {
-    // Hinglish shorthand → normalized form
     const SH = {
         'kr':'kar','kro':'karo','krna':'karna','krte':'karte','krti':'karti',
         'rhi':'rahi','rha':'raha','rhe':'rahe','rho':'raho',
-        'nhi':'nahi','ni':'nahi','nh':'nahi',
+        'nhi':'nahi','ni':'nahi','nh':'nahi','nai':'nahi',
         'h':'hai','hn':'haan','ha':'haan','hm':'haan','haa':'haan',
         'aur':'aur','or':'aur',
-        'kyu':'kyun',
+        'kyu':'kyun','kyuki':'kyunki',
         'yrr':'yaar','yr':'yaar',
         'bhi':'bhi','bi':'bhi',
         'me':'mein','mai':'mein',
@@ -480,14 +531,16 @@ const FuzzyEngine = (() => {
         'sch':'sach',
         'bta':'bata','bto':'batao',
         'sun':'suno','sn':'suno',
-        'dekh':'dekh','dkh':'dekh',
-        'aja':'aaja','aa':'aao',
+        'dikha':'dikha','dikh':'dikho',
+        'aja':'aaja',
         'kal':'kal','aaj':'aaj','ab':'ab','abhi':'abhi',
+        'ghr':'ghar','grh':'ghar',
+        'kha':'khana','khaya':'khaya',
+        'lrki':'ladki','lrka':'ladka',
     };
 
-    // Normalize text: lowercase, strip punctuation, expand shorthands
     function norm(text) {
-        return text
+        return stripEmoji(text)
             .toLowerCase()
             .replace(/[^\w\s]/g, ' ')
             .replace(/\s+/g, ' ')
@@ -497,35 +550,29 @@ const FuzzyEngine = (() => {
             .join(' ');
     }
 
-    // Space-efficient Levenshtein (single row DP)
-    // WHY: O(n) space instead of O(m*n) — crucial for mobile
+    // Space-efficient Levenshtein — O(n) space
     function lev(a, b) {
-        a = a.slice(0, 42); b = b.slice(0, 42); // cap for perf
+        a = a.slice(0, 45); b = b.slice(0, 45);
         const m = a.length, n = b.length;
         if (!m) return n; if (!n) return m;
-        if (Math.abs(m - n) > 12) return Math.max(m, n); // fast reject
-
+        if (Math.abs(m - n) > 14) return Math.max(m, n);
         const row = Array.from({ length: n + 1 }, (_, i) => i);
         for (let i = 1; i <= m; i++) {
             let prev = row[0]; row[0] = i;
             for (let j = 1; j <= n; j++) {
                 const tmp = row[j];
-                row[j] = a[i-1] === b[j-1]
-                    ? prev
-                    : 1 + Math.min(prev, row[j], row[j-1]);
+                row[j] = a[i-1] === b[j-1] ? prev : 1 + Math.min(prev, row[j], row[j-1]);
                 prev = tmp;
             }
         }
         return row[n];
     }
 
-    // Combined score (0–1). WHY two signals:
-    // - Word overlap: good for short Hinglish matches
-    // - Levenshtein: catches typos and character-level variants
     function score(query, candidate) {
         const q = norm(query), c = norm(candidate);
+        if (!q || !c) return 0;
         if (q === c) return 1.0;
-        if (c.includes(q) || q.includes(c)) return 0.88;
+        if (c.includes(q) || q.includes(c)) return 0.87;
 
         const qW = q.split(' ').filter(Boolean);
         const cW = new Set(c.split(' ').filter(Boolean));
@@ -536,7 +583,7 @@ const FuzzyEngine = (() => {
         const d = lev(q, c);
         const levS = 1 - d / (Math.max(q.length, c.length) || 1);
 
-        return wordS * 0.62 + levS * 0.38;
+        return wordS * 0.65 + levS * 0.35;
     }
 
     return { norm, score };
@@ -544,17 +591,11 @@ const FuzzyEngine = (() => {
 
 // ────────────────────────────────────────────────────────────
 // MODULE: INDEXER
-// WHY: With 20k+ entries, O(n) Levenshtein on every message
-//      would take ~2s on mobile. The inverted word index
-//      filters candidates to ~20–80 entries first, making
-//      subsequent scoring instant.
 // ────────────────────────────────────────────────────────────
 function buildWordIndex(data) {
     const idx = new Map();
     data.forEach((item, i) => {
-        const words = FuzzyEngine.norm(item.u)
-            .split(' ')
-            .filter(w => w.length > 1);
+        const words = FuzzyEngine.norm(item.u).split(' ').filter(w => w.length > 1);
         for (const w of words) {
             if (!idx.has(w)) idx.set(w, []);
             idx.get(w).push(i);
@@ -563,18 +604,17 @@ function buildWordIndex(data) {
     return idx;
 }
 
+// Returns { item, idx } pairs — idx needed for anti-repeat tracking
 function getCandidates(query) {
     const words = FuzzyEngine.norm(query).split(' ').filter(w => w.length > 1);
     if (!words.length) return [];
-    const hitMap = new Map(); // index → score
+    const hitMap = new Map();
 
     for (const w of words) {
-        // Exact word hits get +2
         if (State.wordIndex.has(w)) {
             for (const i of State.wordIndex.get(w))
                 hitMap.set(i, (hitMap.get(i) ?? 0) + 2);
         }
-        // Prefix-match hits get +1 (catches truncated shorthands)
         for (const [key, indices] of State.wordIndex) {
             if (key !== w && (key.startsWith(w) || w.startsWith(key))) {
                 for (const i of indices)
@@ -585,21 +625,84 @@ function getCandidates(query) {
 
     return [...hitMap.entries()]
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 80)
-        .map(([i]) => State.dataset[i]);
+        .slice(0, 100)
+        .map(([i]) => ({ item: State.dataset[i], idx: i }));
 }
 
-function findMatch(query, threshold = 0.44) {
+// Anti-repetition tracker
+function markUsed(idx) {
+    if (State.usedQueue.length >= State.MAX_USED) {
+        const old = State.usedQueue.shift();
+        State.usedSet.delete(old);
+    }
+    State.usedSet.add(idx);
+    State.usedQueue.push(idx);
+}
+
+// ── SMART MATCH FUNCTION ────────────────────────────────────
+// The brain of the chatbot. Three-layer filtering:
+//   Layer 1: Garbage & repeat filter
+//   Layer 2: Intent-aware threshold (greetings need less confidence)
+//   Layer 3: Context boost (question→question, emotion→emotion)
+function findMatch(query) {
     if (!State.indexed) return null;
-    const candidates = getCandidates(query);
+
+    const clean = stripEmoji(query).trim();
+    if (!clean || clean.length < 2) return null;
+
+    const intent = detectIntent(clean);
+
+    // Short acknowledgements ("Ok", "Hn") → always use API for context
+    // WHY: "Ok" exists 500+ times in dataset with random responses —
+    //      any match would be wrong without conversation context.
+    if (intent.isShortAck && intent.wordCount === 1) return null;
+
+    // Threshold is dynamic based on intent
+    // - Greetings need lower confidence (fewer variations in dataset)
+    // - Questions and emotional messages need high confidence
+    const THRESHOLD = intent.isGreeting ? 0.55
+                    : intent.isSad || intent.isLove ? 0.64
+                    : 0.61;
+
+    const candidates = getCandidates(clean);
     if (!candidates.length) return null;
 
-    let best = null, top = threshold;
-    for (const item of candidates) {
-        const s = FuzzyEngine.score(query, item.u);
-        if (s > top) { top = s; best = item; }
+    let best = null, top = THRESHOLD;
+
+    for (const { item, idx } of candidates) {
+        // Layer 1: Anti-repetition — skip recently used
+        if (State.usedSet.has(idx)) continue;
+
+        // Layer 1: No exact repeat of last reply
+        if (item.g === State.lastChikuMsg) continue;
+
+        // Layer 1: No garbage responses ("??", ".", single chars)
+        if (isGarbageResponse(item.g)) continue;
+
+        // Layer 2: Score the match
+        let s = FuzzyEngine.score(clean, item.u);
+
+        // Layer 3: Intent-based boosting
+        const itemIntent = detectIntent(item.u);
+        if (intent.isGreeting && itemIntent.isGreeting)   s += 0.10;
+        if (intent.isQuestion && itemIntent.isQuestion)   s += 0.06;
+        if (intent.isSad      && itemIntent.isSad)        s += 0.05;
+        if (intent.isLove     && itemIntent.isLove)       s += 0.05;
+
+        // Slight boost for similar message length (context similarity)
+        const lenRatio = Math.min(clean.length, item.u.length) /
+                         Math.max(clean.length, item.u.length, 1);
+        s += lenRatio * 0.03;
+
+        if (s > top) { top = s; best = { item, idx }; }
     }
-    return best;
+
+    if (!best) return null;
+
+    markUsed(best.idx);
+    State.lastChikuMsg = best.item.g;
+    State.lastUserIntent = intent;
+    return best.item;
 }
 
 // ────────────────────────────────────────────────────────────
