@@ -195,16 +195,17 @@ export default async function handler(req, res) {
                 "HTTP-Referer":  process.env.SITE_URL ?? "https://chiku-iota.vercel.app/",
         
             },
-            body: JSON.stringify({
-                model:       "nvidia/nemotron-3-super-120b-a12b:free",
-                max_tokens:  180,
-                temperature: 0.90,
-                top_p:       0.92,
-                messages: [
-                    { role: "system", content: systemPrompt },
-                    ...messages,
-                ],
-            }),
+            // Change these settings:
+body: JSON.stringify({
+    model:       "nvidia/nemotron-3-super-120b-a12b:free",
+    max_tokens:  45,              // ← REDUCE from 180 → Chiku short bolti h
+    temperature: 0.70,            // ← LOWER from 0.90 → less rambly, more focused
+    top_p:       0.85,            // ← LOWER from 0.92 → avoid long tangents
+    messages: [
+        { role: "system", content: systemPrompt },
+        ...messages,
+    ],
+}),
             signal: controller.signal,
         });
 
