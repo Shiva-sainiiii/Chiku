@@ -196,7 +196,7 @@ export default async function handler(req, res) {
         
             },
             body: JSON.stringify({
-                model:       "nvidia/nemotron-3-super-120b-a12b:free",
+                model:       "meta-llama/llama-3.3-70b-instruct:free",
                 max_tokens:  180,
                 temperature: 0.90,
                 top_p:       0.92,
