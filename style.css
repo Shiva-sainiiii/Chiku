@@ -61,7 +61,7 @@ body {
   background: var(--bg);
   color: var(--text-1);
   height: 100dvh;
-  height: 100vh;           /* fallback */
+  height: 100%;           /* fallback */
   display: flex;
   flex-direction: column;
   overflow: hidden;
