@@ -1,7 +1,8 @@
 // ===============================
-// LOAD DATASET
+// DATA
 // ===============================
 let dataset = [];
+let memory = []; // 🔥 context memory (last chats)
 
 async function loadDataset() {
   const res = await fetch("dataset.json");
@@ -18,13 +19,16 @@ const sendBtn = document.getElementById("send-btn");
 const typing = document.getElementById("typing");
 
 // ===============================
-// SEND MESSAGE
+// EVENTS
 // ===============================
 sendBtn.onclick = sendMessage;
 input.addEventListener("keypress", e => {
   if (e.key === "Enter") sendMessage();
 });
 
+// ===============================
+// SEND MESSAGE
+// ===============================
 function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
@@ -32,28 +36,74 @@ function sendMessage() {
   addMessage(text, "user");
   input.value = "";
 
+  // 🔥 save memory
+  memory.push({ role: "user", text });
+  if (memory.length > 10) memory.shift();
+
   generateReply(text);
 }
 
 // ===============================
-// ADD MESSAGE UI
+// ADD MESSAGE
 // ===============================
-function addMessage(text, type) {
+function addMessage(text, type, source = "dataset") {
   const msg = document.createElement("div");
   msg.className = "message " + type;
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
+
+  if (type === "ai") {
+    bubble.classList.add(source === "ai" ? "ai-generated" : "dataset-generated");
+  }
+
   bubble.innerText = text;
+
+  // tag
+  if (type === "ai") {
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.innerText = source === "ai" ? "AI" : "Real";
+    bubble.appendChild(tag);
+  }
 
   msg.appendChild(bubble);
   chat.appendChild(msg);
 
-  chat.scrollTop = chat.scrollHeight;
+  chat.scrollTo({ top: chat.scrollHeight, behavior: "smooth" });
 }
 
 // ===============================
-// SIMILARITY (simple but effective)
+// MOOD DETECTION 😒🙂😡
+// ===============================
+function detectMood(text) {
+  text = text.toLowerCase();
+
+  if (text.includes("love") || text.includes("miss") || text.includes("❤️")) {
+    return "love";
+  }
+
+  if (text.includes("sorry") || text.includes("please")) {
+    return "soft";
+  }
+
+  if (text.includes("kyu") || text.includes("kya") || text.includes("?")) {
+    return "question";
+  }
+
+  if (text.includes("sex") || text.includes("kiss")) {
+    return "awkward";
+  }
+
+  if (text.includes("nhi") || text.includes("mat")) {
+    return "attitude";
+  }
+
+  return "normal";
+}
+
+// ===============================
+// SIMILARITY
 // ===============================
 function similarity(a, b) {
   a = a.toLowerCase();
@@ -71,94 +121,119 @@ function similarity(a, b) {
 }
 
 // ===============================
-// FIND BEST MATCH
+// CONTEXT MATCH (🔥 memory use)
 // ===============================
 function findBestMatch(userText) {
-  let best = null;
-  let bestScore = 0;
+  let bestMatches = [];
 
   dataset.forEach(item => {
-    const combinedInput = item.input.join(" ");
+    const combined = item.input.join(" ");
+    const score = similarity(userText, combined);
 
-    const score = similarity(userText, combinedInput);
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = item;
+    if (score > 0.2) {
+      bestMatches.push({ item, score });
     }
   });
 
-  return bestScore > 0.2 ? best : null;
+  // 🔥 sort by score
+  bestMatches.sort((a, b) => b.score - a.score);
+
+  // 🔥 return top 3 (variation ke liye)
+  return bestMatches.slice(0, 3).map(x => x.item);
 }
 
 // ===============================
-// TYPING EFFECT
+// RANDOM PICK (variation)
 // ===============================
-function showTyping() {
-  typing.classList.remove("hidden");
-}
-
-function hideTyping() {
-  typing.classList.add("hidden");
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
 // ===============================
-// SEND MULTIPLE AI MESSAGES
+// DELAY
 // ===============================
-async function sendMultiMessages(messages) {
-  for (let msg of messages) {
-    await delay(random(500, 1200));
-    addMessage(msg, "ai");
-  }
-}
-
 function delay(ms) {
   return new Promise(res => setTimeout(res, ms));
 }
 
-function random(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+// ===============================
+// MULTI MESSAGE
+// ===============================
+async function sendMultiMessages(messages, source = "dataset") {
+  for (let msg of messages) {
+    await delay(300 + msg.length * 30);
+    addMessage(msg, "ai", source);
+
+    // 🔥 save memory
+    memory.push({ role: "ai", text: msg });
+    if (memory.length > 10) memory.shift();
+  }
 }
 
 // ===============================
-// MAIN REPLY LOGIC
+// MAIN AI LOGIC
 // ===============================
 async function generateReply(userText) {
 
-  showTyping();
+  typing.classList.remove("hidden");
 
-  // Step 1: Try dataset match
-  const match = findBestMatch(userText);
+  const mood = detectMood(userText);
 
-  if (match) {
-    await delay(random(800, 1500));
-    hideTyping();
+  // 🔥 dataset matches (multiple)
+  const matches = findBestMatch(userText);
 
-    await sendMultiMessages(match.output);
+  if (matches.length) {
+    await delay(600);
+
+    typing.classList.add("hidden");
+
+    // 🔥 random variation
+    const selected = pickRandom(matches);
+
+    let response = [...selected.output];
+
+    // 🔥 mood based tweak
+    if (mood === "love") {
+      response.push("Hn 😅");
+    }
+
+    if (mood === "attitude") {
+      response.unshift("Hn to 😒");
+    }
+
+    if (mood === "question") {
+      response.push("Tu bol na");
+    }
+
+    await sendMultiMessages(response, "dataset");
     return;
   }
 
-  // Step 2: Fallback AI API
+  // ===============================
+  // 🔥 FALLBACK AI WITH MEMORY
+  // ===============================
   try {
     const res = await fetch("/api/ask", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ message: userText })
+      body: JSON.stringify({
+        message: userText,
+        memory: memory // 🔥 send context
+      })
     });
 
     const data = await res.json();
 
-    hideTyping();
+    typing.classList.add("hidden");
 
-    // Split into multiple lines (simulate her style)
     const replies = data.reply.split(". ");
 
-    await sendMultiMessages(replies);
+    await sendMultiMessages(replies, "ai");
 
-  } catch (err) {
-    hideTyping();
-    addMessage("Hn theek h 👍", "ai");
+  } catch {
+    typing.classList.add("hidden");
+    addMessage("Hn 😑", "ai");
   }
 }
