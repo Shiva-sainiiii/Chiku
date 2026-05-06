@@ -193,7 +193,7 @@ export default async function handler(req, res) {
                 "Authorization": `Bearer ${apiKey}`,
                 "Content-Type":  "application/json",
                 "HTTP-Referer":  process.env.SITE_URL ?? "https://chiku-iota.vercel.app/",
-                "X-Title":       "Chiku Chatbot",
+        
             },
             body: JSON.stringify({
                 model:       "nvidia/nemotron-3-super-120b-a12b:free",
