@@ -248,6 +248,10 @@
             background: rgba(79,172,254,0.12); color: var(--blue);
             border: 1px solid rgba(79,172,254,0.22);
         }
+        .tag-memory {
+            background: rgba(168,100,255,0.12); color: #c084fc;
+            border: 1px solid rgba(168,100,255,0.22);
+        }
 
         /* ── DATE DIVIDER ── */
         .divider {
@@ -705,6 +709,60 @@ function findMatch(query) {
     return best.item;
 }
 
+// ── FIND TOP MATCHES (RAG) ──────────────────────────────────
+// Returns a RANKED LIST of the most relevant conversations.
+// WHY: The JSON is not a lookup table — it's personality
+//      training data. We find the top N similar situations
+//      and show them to the AI as style examples:
+//      "Ye dekh, Chiku aisi situations mein AISA bolti hai."
+//      The AI then generates a FRESH, contextually-aware reply
+//      that SOUNDS like Chiku but fits the current moment.
+function findTopMatches(query, n = 5) {
+    if (!State.indexed) return [];
+
+    const clean = stripEmoji(query).trim();
+    if (!clean || clean.length < 2) return [];
+
+    const intent = detectIntent(clean);
+    const candidates = getCandidates(clean);
+    if (!candidates.length) return [];
+
+    const scored = [];
+
+    for (const { item, idx } of candidates) {
+        if (isGarbageResponse(item.g)) continue;
+        if (isGarbageResponse(item.u)) continue;
+
+        let s = FuzzyEngine.score(clean, item.u);
+
+        // Intent boosts — semantically similar situations rank higher
+        const iI = detectIntent(item.u);
+        if (intent.isGreeting && iI.isGreeting) s += 0.10;
+        if (intent.isQuestion && iI.isQuestion) s += 0.07;
+        if (intent.isSad      && iI.isSad)      s += 0.08;
+        if (intent.isLove     && iI.isLove)      s += 0.07;
+        if (intent.isAngry    && iI.isAngry)     s += 0.06;
+
+        // Boost for conversationally similar weight (length ratio)
+        const lenRatio = Math.min(clean.length, item.u.length) /
+                         Math.max(clean.length, item.u.length, 1);
+        s += lenRatio * 0.03;
+
+        if (s > 0.28) scored.push({ item, idx, score: s });
+    }
+
+    // Deduplicate by response text, return top N
+    const seenResponses = new Set();
+    return scored
+        .sort((a, b) => b.score - a.score)
+        .filter(({ item }) => {
+            if (seenResponses.has(item.g)) return false;
+            seenResponses.add(item.g);
+            return true;
+        })
+        .slice(0, n);
+}
+
 // ────────────────────────────────────────────────────────────
 // MODULE: MEMORY BUFFER
 // WHY: AI fallback needs conversation context. Sending the
@@ -723,15 +781,20 @@ function pushMemory(role, content) {
 // WHY: Sends prompt + history to /api/ask (Vercel serverless).
 //      AbortSignal provides client-side timeout.
 // ────────────────────────────────────────────────────────────
-async function apiAsk(prompt) {
+// RAG-powered API client
+// Sends: prompt + conversation history + style examples (real Chiku conversations)
+// The AI uses examples to understand HOW Chiku talks, then generates a
+// fresh, contextually-aware response that fits the current emotional moment.
+async function apiAsk(prompt, examples = []) {
     const res = await fetch('/api/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             prompt,
-            history: State.memBuffer.slice(0, -1) // exclude the just-added user msg
+            history:  State.memBuffer.slice(0, -1),
+            examples, // RAG: real Shiva <-> Chiku conversations as few-shot style guide
         }),
-        signal: AbortSignal.timeout(14000),
+        signal: AbortSignal.timeout(16000),
     });
 
     if (res.status === 429) throw new Error('RATE_LIMIT');
@@ -773,8 +836,10 @@ const UI = (() => {
 
         if (source) {
             const tag = document.createElement('span');
-            tag.className = `src-tag ${source === 'AI' ? 'tag-ai' : 'tag-local'}`;
-            tag.textContent = source === 'AI' ? '✦ AI' : '◉ Local';
+            const tagClass = source === 'AI' ? 'tag-ai' : source === 'Memory' ? 'tag-memory' : 'tag-local';
+            const tagText  = source === 'AI' ? '✦ AI' : source === 'Memory' ? '◈ Memory' : '◉ Local';
+            tag.className = `src-tag ${tagClass}`;
+            tag.textContent = tagText;
             meta.appendChild(tag);
         }
 
@@ -845,6 +910,21 @@ const ERROR_REPLIES = [
     'Yrr signal nhi aa rha, baad mein bata 🙈',
 ];
 
+// ════════════════════════════════════════════════════════════
+// CORE: RAG-POWERED SEND HANDLER
+//
+// The fundamental shift in thinking:
+//   OLD: "Find best match → return that response" (lookup table)
+//   NEW: "Find similar conversations → show AI as examples →
+//          AI generates fresh, emotionally-aware response"
+//
+// Decision tree:
+//   Score >= 0.90  → Direct local reply (near-exact match,
+//                    guaranteed authentic voice, very fast)
+//   Score 0.28–0.89 → RAG mode: send top examples to AI,
+//                    AI generates contextual response in Chiku's style
+//   No match found → AI responds with just personality prompt
+// ════════════════════════════════════════════════════════════
 async function handleSend() {
     if (State.isBusy) return;
 
@@ -860,27 +940,54 @@ async function handleSend() {
     UI.addMsg(val, 'u', null);
     pushMemory('user', val);
 
-    // ── STRATEGY 1: Local Fuzzy Match ──────────────────────
-    if (State.indexed) {
-        const match = findMatch(val);
-        if (match) {
+    // Step 1: Find top matching conversations from dataset
+    const topMatches = findTopMatches(val, 5);
+    const bestScore  = topMatches[0]?.score ?? 0;
+
+    // Step 2: Decision — direct use vs RAG vs pure AI
+    // ── PATH A: Near-exact match (score >= 0.90) ──────────
+    // WHY: If score is this high, the response is genuinely
+    //      from Chiku's real conversations — use it directly.
+    //      Fast, free, guaranteed authentic voice.
+    if (bestScore >= 0.90) {
+        const best = topMatches[0];
+        // One extra check: not recently used, not a repeat
+        if (!State.usedSet.has(best.idx) && best.item.g !== State.lastChikuMsg) {
             UI.showTyping(true);
-            // Natural typing delay (400–750ms)
-            await sleep(420 + Math.random() * 330);
+            await sleep(380 + Math.random() * 340);
             UI.showTyping(false);
-            UI.addMsg(match.g, 'g', 'Local');
-            pushMemory('assistant', match.g);
+            markUsed(best.idx);
+            State.lastChikuMsg = best.item.g;
+            UI.addMsg(best.item.g, 'g', 'Local');
+            pushMemory('assistant', best.item.g);
             finalize();
             return;
         }
     }
 
-    // ── STRATEGY 2: API Fallback ───────────────────────────
+    // ── PATH B & C: RAG mode → AI with style examples ─────
+    // WHY: Even if there's no perfect text match, we can find
+    //      the 4 most similar real conversations and show them
+    //      to the AI. The AI then understands:
+    //      "In similar situations, Chiku talked like THIS."
+    //      This gives emotionally-correct, personality-authentic
+    //      responses even for messages never seen in the dataset.
     UI.showTyping(true);
+
+    // Build examples list: avoid recently used, remove duplicates
+    const examples = topMatches
+        .filter(m => m.score > 0.30)  // only meaningful similarities
+        .map(m => ({ u: m.item.u, g: m.item.g }))
+        .slice(0, 4);  // max 4 examples (token budget)
+
     try {
-        const reply = await apiAsk(val);
+        const reply = await apiAsk(val, examples);
         UI.showTyping(false);
-        UI.addMsg(reply, 'g', 'AI');
+        State.lastChikuMsg = reply;
+
+        // Tag source: "Memory" if we had good examples, "AI" if none
+        const source = examples.length >= 2 ? 'Memory' : 'AI';
+        UI.addMsg(reply, 'g', source);
         pushMemory('assistant', reply);
     } catch (err) {
         UI.showTyping(false);
