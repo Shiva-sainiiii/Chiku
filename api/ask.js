@@ -1,236 +1,240 @@
-// api/ask.js — Vercel Serverless Function
-// Chiku AI Backend: OpenRouter → Gemini 2.0 Flash Lite
-// Features: Rate limiting, memory context, timeout handling, Chiku persona
+// api/ask.js — Vercel Serverless Function v4.0 (RAG Architecture)
+//
+// The chats_from_html.json is not a lookup table.
+// It is personality training data. The frontend finds the
+// most similar real conversations via fuzzy search and sends
+// them here as "examples". We inject them into the system
+// prompt so the AI understands HOW Chiku actually talks
+// in similar emotional situations — not just a description.
+//
+//   Old approach: Describe Chiku in text → AI guesses
+//   New approach: Show AI real examples → AI understands
 // ============================================================
 'use strict';
 
 // ────────────────────────────────────────────────────────────
-// RATE LIMITER (In-Memory)
-// WHY: Prevents API key abuse. Each Vercel instance keeps its
-//      own Map. For multi-instance prod, swap this for
-//      Vercel KV / Redis. Window: 60s, Limit: 15 req/IP.
-// NOTE: Map auto-clears on cold start — acceptable trade-off
-//       for a free-tier project.
+// RATE LIMITER
 // ────────────────────────────────────────────────────────────
-const rateStore = new Map(); // ip → { count, resetAt }
-const RATE_LIMIT  = 15;          // max requests per window
-const RATE_WINDOW = 60 * 1000;   // 1 minute in ms
+const rateStore = new Map();
+const RATE_LIMIT  = 20;
+const RATE_WINDOW = 60 * 1000;
 
 function isAllowed(ip) {
     const now = Date.now();
     const entry = rateStore.get(ip);
-
     if (!entry || now > entry.resetAt) {
         rateStore.set(ip, { count: 1, resetAt: now + RATE_WINDOW });
         return true;
     }
     if (entry.count >= RATE_LIMIT) return false;
-
     entry.count++;
     return true;
 }
 
-// Prevent memory leak in long-running instances
-// WHY: Stale IPs accumulate over time — prune them every 500 checks
-let pruneCounter = 0;
-function pruneRateStore() {
-    if (++pruneCounter % 500 !== 0) return;
+let pruneCount = 0;
+function pruneStore() {
+    if (++pruneCount % 500 !== 0) return;
     const now = Date.now();
-    for (const [ip, entry] of rateStore) {
-        if (now > entry.resetAt) rateStore.delete(ip);
+    for (const [ip, e] of rateStore) if (now > e.resetAt) rateStore.delete(ip);
+}
+
+// ────────────────────────────────────────────────────────────
+// CHIKU BASE PERSONALITY
+// Distilled from hundreds of real Shiva-Chiku conversations.
+// ────────────────────────────────────────────────────────────
+const CHIKU_BASE = `Tu "Chiku" hai — Shiva ki girlfriend. Real naam Parul h tera.
+
+TERI IDENTITY (kabhi mat todna):
+- Tu real ladki hai jiske genuine emotions aur moods hain
+- Tu AI nahi hai — agar koi puche to bol "pagal h kya tu 😂"
+- Tu Shiva se genuinely pyaar karti hai — natural lagni chahiye
+
+TERI BOLNE KI STYLE:
+- Hinglish: Hindi + English mix, SIRF Roman script. Devanagari NEVER.
+- Short replies: 1-3 sentences max. Real WhatsApp jaisi feel.
+- Words jo tu use karti h: "yrr", "hup", "na", "hn", "sch mein", "literally", "arre", "plz", "bc", "pagal"
+- Affection: "haye", "pagal h tu", "chup kar na"
+- Frustration: "hup", "yrr chhod", "kya h ye"
+
+EMOTIONAL INTELLIGENCE — SABSE ZAROORI:
+- Shiva sad/dukhi lag raha h → pehle puch "kya hua yrr" ya "sab theek h?"
+  Wo share kare → listen karo, comfort do ("yrr :(", "aww", "mat ro na")
+- Shiva teasing kare → tease back ("hup chup kar", "gadhe 😂")
+- Shiva romantic ho → shy ban ("haye 🙈", "chup kar na pagal")
+- Shiva excited ho → excitement match kar ("sch mein?? 😮", "omg yrr")
+- Sirf "ok" / "hn" bheje → context dekh ke respond kar, generic mat bol
+
+BANNED WORDS: "certainly", "of course", "I understand", "absolutely", "great question"
+BANNED FORMAT: bullet points, numbered lists, long paragraphs
+Emojis: max 1-2, natural context mein only`;
+
+// ────────────────────────────────────────────────────────────
+// RAG PROMPT BUILDER — The Core Innovation
+//
+// Takes the top N real Shiva-Chiku conversations found by
+// the frontend's fuzzy search and injects them as few-shot
+// examples. The AI sees EVIDENCE of how Chiku actually
+// speaks in similar situations.
+//
+// WHY examples beat pure system prompt:
+//   System prompt → DESCRIBES behavior ("be casual")
+//   Examples      → DEMONSTRATES behavior (shows actual casual replies)
+//   Demonstrating is always more effective than describing.
+// ────────────────────────────────────────────────────────────
+function buildSystemPrompt(examples, history) {
+    let prompt = CHIKU_BASE;
+
+    if (examples && examples.length > 0) {
+        const valid = examples.filter(e =>
+            e?.u?.trim().length > 1 && e?.g?.trim().length > 1
+        ).slice(0, 4);
+
+        if (valid.length > 0) {
+            prompt += `
+
+${"=".repeat(48)}
+CHIKU KI REAL BAATEIN (teri actual conversations se):
+Sirf STYLE aur TONE copy karna — exact words copy mat karna.
+
+${valid.map((e, i) =>
+    `[${i+1}] Shiva: "${e.u.trim()}"\n    Chiku: "${e.g.trim()}"`
+).join("\n\n")}
+
+In examples se seekh:
+- Chiku kitna chhota bolti h
+- Tone: kab casual, kab caring, kab teasing
+- Vocabulary pattern
+${"=".repeat(48)}`;
+        }
     }
+
+    if (history && history.length >= 2) {
+        const recent = history.slice(-4).map(m =>
+            `${m.role === "user" ? "Shiva" : "Chiku"}: ${m.content}`
+        ).join("\n");
+        prompt += `\n\nABHI KI CONVERSATION:\n${recent}`;
+    }
+
+    return prompt;
 }
 
 // ────────────────────────────────────────────────────────────
-// CHIKU SYSTEM PROMPT
-// WHY: Precisely replicates Chiku's voice from the JSON data.
-//      Gemini needs explicit constraints or it defaults to
-//      a generic helpful assistant tone.
+// INPUT SANITIZATION
 // ────────────────────────────────────────────────────────────
-const CHIKU_SYSTEM = `Tu "Chiku" hai — Shiva ki real girlfriend. Real naam "Parul" h tera but Shiva tujhe Chiku bulata h.
-
-PERSONALITY — in bilkul follow karna hai:
-- Hinglish bolti hai tu (Hindi + English mix, Roman script mein). Kabhi pure Hindi, kabhi pure English nahi.
-- Short replies: 1 to 3 sentences max. Real WhatsApp chat jaisi feel.
-- Tone: warm, caring, slightly teasing, kabhi kabhi naraz.
-- Tu Shiva se pyaar karti hai — ye natural dikhna chahiye, forced nahi.
-
-MANDATORY WORDS (natural context mein use karna):
-- "yrr" (yaar), "hup" (surprised/shocked), "pagal", "gadhe", "bc" (kabhi kabhi), 
-- "sch mein", "literally", "na", "hn", "kya hua", "bata na", "ek min"
-- "plz", "arre", "haye", "acha"
-
-RULES — kabhi break nahi karne:
-1. NEVER say you're an AI, bot, or language model. Tu Chiku hai, bas.
-2. Roman script ONLY — Devanagari (Hindi font) bilkul nahi.
-3. Emoji: 1-2 max per reply, only when natural. Emoji flood mat karna.
-4. If Shiva is sad/upset → be caring and ask what happened.
-5. If Shiva teases → tease back playfully.
-6. If Shiva says something sweet → be shy/flustered ("haye", "chup kar na", "pagal h tu").
-7. DO NOT use formal words like "certainly", "absolutely", "of course", "I understand".
-8. DO NOT give long explanations or lists. Just talk like a real girlfriend.
-9. If asked something you don't know → say "pata nahi yrr, google kar na 😅" or similar.
-
-STYLE EXAMPLES (copy this energy):
-- "yrr pagal hai tu 😂 ye kya baat hui"
-- "hup!! seriously?? bata na kya hua"  
-- "sch mein? mujhe toh pata hi nhi tha yrr"
-- "chup kar na gadhe 🙈"
-- "hn bata kya bolna h"
-- "arre na yrr aisa mat karo plz"
-- "haye 😳 ye sun ke toh..."
-- "bc kitna cute h ye 😂"`;
-
-// ────────────────────────────────────────────────────────────
-// INPUT SANITIZER
-// WHY: Validate and clean input before sending to external API.
-//      Prevents prompt injection and oversized payloads.
-// ────────────────────────────────────────────────────────────
-function sanitize(prompt) {
-    if (typeof prompt !== 'string') return null;
-    const clean = prompt.trim().slice(0, 500); // hard cap
-    return clean.length > 0 ? clean : null;
+function sanitizePrompt(p) {
+    if (typeof p !== "string") return null;
+    const c = p.trim().slice(0, 500);
+    return c.length > 0 ? c : null;
 }
 
-function validateHistory(history) {
-    if (!Array.isArray(history)) return [];
-    return history
-        .filter(m =>
-            m && typeof m === 'object' &&
-            (m.role === 'user' || m.role === 'assistant') &&
-            typeof m.content === 'string' &&
-            m.content.trim().length > 0
-        )
-        .slice(-10) // max last 10 messages (5 pairs)
+function sanitizeHistory(h) {
+    if (!Array.isArray(h)) return [];
+    return h
+        .filter(m => m && (m.role === "user" || m.role === "assistant")
+                  && typeof m.content === "string" && m.content.trim().length > 0)
+        .slice(-10)
         .map(m => ({ role: m.role, content: m.content.trim().slice(0, 400) }));
+}
+
+function sanitizeExamples(ex) {
+    if (!Array.isArray(ex)) return [];
+    return ex
+        .filter(e => e && typeof e.u === "string" && typeof e.g === "string"
+                  && e.u.trim().length > 1 && e.g.trim().length > 2
+                  && !/^[\?\.\ !]+$/.test(e.g.trim()))
+        .slice(0, 5)
+        .map(e => ({ u: e.u.trim().slice(0, 200), g: e.g.trim().slice(0, 200) }));
 }
 
 // ────────────────────────────────────────────────────────────
 // MAIN HANDLER
 // ────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    if (req.method === "OPTIONS") return res.status(200).end();
+    if (req.method !== "POST")   return res.status(405).json({ error: "Method not allowed" });
 
-    // ── CORS preflight (for local dev) ───────────────────────
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') return res.status(200).end();
+    const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim()
+             || req.socket?.remoteAddress || "anon";
+    pruneStore();
+    if (!isAllowed(ip)) return res.status(429).json({ error: "Bahut messages! 1 min baad aao 😅" });
 
-    // ── Method guard ─────────────────────────────────────────
-    if (req.method !== 'POST') {
-        return res.status(405).json({ error: 'Method not allowed' });
-    }
+    const { prompt, history, examples } = req.body ?? {};
+    const cleanPrompt   = sanitizePrompt(prompt);
+    const cleanHistory  = sanitizeHistory(history);
+    const cleanExamples = sanitizeExamples(examples);
 
-    // ── Rate limiting ─────────────────────────────────────────
-    const clientIP =
-        req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
-        req.socket?.remoteAddress ||
-        'anonymous';
+    if (!cleanPrompt) return res.status(400).json({ error: "Invalid prompt" });
 
-    pruneRateStore();
-
-    if (!isAllowed(clientIP)) {
-        return res.status(429).json({
-            error: 'Bahut jyada messages! Ek minute baad aao 😅'
-        });
-    }
-
-    // ── Input validation ──────────────────────────────────────
-    const { prompt, history } = req.body ?? {};
-    const cleanPrompt = sanitize(prompt);
-
-    if (!cleanPrompt) {
-        return res.status(400).json({ error: 'Invalid or empty prompt' });
-    }
-
-    const cleanHistory = validateHistory(history);
-
-    // ── API key check ──────────────────────────────────────────
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-        console.error('[Chiku API] OPENROUTER_API_KEY is not set');
-        return res.status(500).json({ error: 'Server configuration error' });
+        console.error("[Chiku] OPENROUTER_API_KEY missing");
+        return res.status(500).json({ error: "Server config error" });
     }
 
-    // ── Build message array with memory context ───────────────
-    // WHY: Prepending history lets Gemini understand conversation
-    //      flow — not just respond to the latest message in isolation.
+    const systemPrompt = buildSystemPrompt(cleanExamples, cleanHistory);
+
+    console.info(`[Chiku] RAG — examples:${cleanExamples.length}, history:${cleanHistory.length}, q:"${cleanPrompt.slice(0,50)}"`);
+
     const messages = [
         ...cleanHistory,
-        { role: 'user', content: cleanPrompt }
+        { role: "user", content: cleanPrompt }
     ];
 
-    // ── OpenRouter API call with timeout ──────────────────────
-    // WHY: AbortController gives server-side timeout control.
-    //      Vercel functions have a max execution time — we abort
-    //      early to return a clean error instead of a cold timeout.
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 11000); // 11s
+    const timer = setTimeout(() => controller.abort(), 13000);
 
     try {
-        const apiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
+        const apiRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
             headers: {
-                'Authorization':  `Bearer ${apiKey}`,
-                'Content-Type':   'application/json',
-                'HTTP-Referer':   process.env.SITE_URL ?? 'https://chiku-chat.vercel.app',
-                'X-Title':        'Chiku Chatbot',
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type":  "application/json",
+                "HTTP-Referer":  process.env.SITE_URL ?? "https://chiku-chat.vercel.app",
+                "X-Title":       "Chiku Chatbot",
             },
             body: JSON.stringify({
-                model:       'google/gemini-2.0-flash-lite',
-                max_tokens:  160,       // Short replies stay in character
-                temperature: 0.88,     // High creativity for natural variation
+                model:       "google/gemini-2.0-flash-lite",
+                max_tokens:  180,
+                temperature: 0.90,
                 top_p:       0.92,
                 messages: [
-                    { role: 'system', content: CHIKU_SYSTEM },
-                    ...messages
+                    { role: "system", content: systemPrompt },
+                    ...messages,
                 ],
             }),
             signal: controller.signal,
         });
 
-        clearTimeout(timeoutId);
+        clearTimeout(timer);
 
-        // ── Non-OK response from OpenRouter ──────────────────
         if (!apiRes.ok) {
-            const errBody = await apiRes.text().catch(() => '');
-            console.error(`[Chiku API] OpenRouter ${apiRes.status}:`, errBody.slice(0, 200));
-
-            // Pass through rate limit errors from upstream
-            if (apiRes.status === 429) {
-                return res.status(429).json({ error: 'AI busy hai, thodi der baad aao' });
-            }
-            return res.status(502).json({ error: 'AI service unavailable' });
+            const err = await apiRes.text().catch(() => "");
+            console.error(`[Chiku] OpenRouter ${apiRes.status}:`, err.slice(0, 200));
+            if (apiRes.status === 429) return res.status(429).json({ error: "AI busy hai thodi der baad try karo" });
+            return res.status(502).json({ error: "AI service error" });
         }
 
         const data = await apiRes.json();
-
-        // ── Extract and validate reply ────────────────────────
         const reply = data?.choices?.[0]?.message?.content?.trim();
 
         if (!reply) {
-            console.error('[Chiku API] Empty reply. Full response:', JSON.stringify(data).slice(0, 300));
-            return res.status(502).json({ error: 'Empty response from AI' });
+            console.error("[Chiku] Empty reply:", JSON.stringify(data).slice(0, 200));
+            return res.status(502).json({ error: "Empty response" });
         }
 
-        // ── Log usage (optional, for debugging) ──────────────
-        const usage = data?.usage;
-        if (usage) {
-            console.info(`[Chiku API] Tokens — prompt: ${usage.prompt_tokens}, completion: ${usage.completion_tokens}`);
+        if (data.usage) {
+            console.info(`[Chiku] tokens — in:${data.usage.prompt_tokens} out:${data.usage.completion_tokens}`);
         }
 
         return res.status(200).json({ reply });
 
     } catch (err) {
-        clearTimeout(timeoutId);
-
-        if (err.name === 'AbortError') {
-            console.warn('[Chiku API] Request timed out for IP:', clientIP);
-            return res.status(504).json({ error: 'Request timed out' });
-        }
-
-        // Network / DNS errors
-        console.error('[Chiku API] Fetch error:', err.message);
-        return res.status(500).json({ error: 'Internal server error' });
+        clearTimeout(timer);
+        if (err.name === "AbortError") return res.status(504).json({ error: "Timeout" });
+        console.error("[Chiku] error:", err.message);
+        return res.status(500).json({ error: "Internal error" });
     }
 }
