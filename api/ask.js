@@ -142,7 +142,7 @@ export default async function handler(req, res) {
       headers: {
         'Authorization':   `Bearer ${process.env.OPENROUTER_API_KEY}`,
         'Content-Type':    'application/json',
-        'HTTP-Referer':    process.env.SITE_URL || 'https://shanu-ai.vercel.app',
+        'HTTP-Referer':    process.env.SITE_URL || 'https://chiku-iota.vercel.app/',
         'X-Title':         'Shanu AI',
       },
       body: JSON.stringify({
