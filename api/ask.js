@@ -299,7 +299,7 @@ export default async function handler(req, res) {
                 // Alternatives (also free on OpenRouter):
                 //   "meta-llama/llama-3.1-8b-instruct:free"
                 //   "mistralai/mistral-7b-instruct:free"
-                model: 'google/gemini-2.0-flash-lite',
+                model: 'nvidia/nemotron-3-super-120b-a12b:free',
 
                 max_tokens:  150,
                 temperature: 0.88,
