@@ -1,63 +1,81 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0e0e17" />
   <title>Shanu AI 💬</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="style.css" />
 </head>
 
 <body>
 
-  <!-- HEADER -->
+  <!-- ═══════════════ HEADER ═══════════════ -->
   <header class="header">
-    <div class="profile">
-      <div class="avatar">🦋</div>
-      <div>
-        <h2>Miss P.</h2>
-        <span class="status">Online</span>
+    <div class="header-left">
+      <div class="avatar-wrap">
+        <div class="avatar">🦋</div>
+        <div class="online-ring"></div>
       </div>
+      <div class="header-info">
+        <h1 class="header-name">Miss P.</h1>
+        <span class="header-status" id="header-status">Online</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <button class="icon-btn" id="clear-btn" title="Clear chat" aria-label="Clear conversation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6l-1 14H6L5 6"/>
+          <path d="M10 11v6M14 11v6"/>
+          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+        </svg>
+      </button>
     </div>
   </header>
 
-  <!-- CHAT AREA -->
-  <main id="chat-container">
-
-    <!-- Example Messages (will be dynamic) -->
-
-    <!-- User Message -->
-    <div class="message user">
-      <div class="bubble">Hello</div>
-    </div>
-
-    <!-- AI Message -->
-    <div class="message ai">
-      <div class="bubble">Hn bolo 😒</div>
-    </div>
-
+  <!-- ═══════════════ CHAT AREA ═══════════════ -->
+  <main id="chat-box" role="log" aria-label="Conversation" aria-live="polite">
+    <div class="date-chip"><span>Today</span></div>
   </main>
 
-  <!-- TYPING INDICATOR -->
-  <div id="typing" class="typing hidden">
-    <span></span>
-    <span></span>
-    <span></span>
+  <!-- ═══════════════ TYPING INDICATOR ═══════════════ -->
+  <div id="typing-wrap" class="typing-wrap hidden" aria-label="Miss P. is typing" aria-live="polite">
+    <div class="typing-avatar">🦋</div>
+    <div class="typing-bubble">
+      <span class="dot"></span>
+      <span class="dot"></span>
+      <span class="dot"></span>
+    </div>
   </div>
 
-  <!-- INPUT AREA -->
-  <footer class="input-area">
-    <input 
-      type="text" 
-      id="user-input" 
-      placeholder="Type a message..." 
-      autocomplete="off"
-    >
-    <button id="send-btn">Send</button>
+  <!-- ═══════════════ INPUT AREA ═══════════════ -->
+  <footer class="input-bar">
+    <div class="input-field-wrap">
+      <input
+        type="text"
+        id="msg-input"
+        placeholder="Type a message…"
+        autocomplete="off"
+        autocorrect="off"
+        spellcheck="false"
+        maxlength="500"
+        aria-label="Message input"
+      />
+    </div>
+    <button id="send-btn" aria-label="Send" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="22" y1="2" x2="11" y2="13"/>
+        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+      </svg>
+    </button>
   </footer>
 
-  <!-- SCRIPTS -->
-  <script src="dataset.json" type="application/json" id="dataset"></script>
   <script src="script.js"></script>
-
 </body>
 </html>
