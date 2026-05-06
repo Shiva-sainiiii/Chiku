@@ -146,7 +146,7 @@ export default async function handler(req, res) {
         'X-Title':         'Shanu AI',
       },
       body: JSON.stringify({
-        model:             'openai/gpt-4o-mini',
+        model:             'nvidia/nemotron-3-super-120b-a12b:free',
         messages,
         temperature:       0.94,
         max_tokens:        130,
