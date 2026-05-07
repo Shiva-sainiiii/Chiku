@@ -262,7 +262,7 @@ export default async function handler(req, res) {
           'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
           'Content-Type':  'application/json',
           'HTTP-Referer':  process.env.SITE_URL || 'https://chiku-iota.vercel.app/',
-          'X-Title':       'Shanu AI',
+          
         },
         body: JSON.stringify({
           model:             'nvidia/nemotron-3-super-120b-a12b:free',
