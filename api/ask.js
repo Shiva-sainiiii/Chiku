@@ -1,131 +1,123 @@
 /* ════════════════════════════════════════════════════════════════
-   SHANU AI  v5.1  —  Vercel Serverless Handler
-   File: api/ask.js
-
-   KEY FIX (v5.1):
-   Free models break with 2000+ token system prompts.
-   Solution: SHORT system prompt (~150 words) + style examples
-   injected as fake user/assistant turns INSIDE messages[].
-   This is called "few-shot via conversation history" and works
-   much better on small/free models.
-
-   Flow:
-     system:    [~150 token personality prompt]
-     user:      style example input 1        ← fake turn
-     assistant: style example output 1       ← fake turn
-     user:      style example input 2        ← fake turn
-     assistant: style example output 2       ← fake turn
-     [real memory turns]
-     user:      actual message               ← real
+   SHANU AI  v5.2  —  Minimal Prompt Fix
+   
+   ROOT CAUSE FIX:
+   Free models dump system prompt content as reply when the prompt
+   contains meta-language like "Rules:", "max 4 lines", "8 words".
+   
+   Solution: System prompt = ~2 sentences only (character + mood).
+   Format/style taught ENTIRELY via few-shot conversation turns.
+   Zero rules, zero instructions in system prompt.
    ════════════════════════════════════════════════════════════════ */
 
-/* ── SHORT system prompt — under 200 words ──────────────────────── */
+/* ── Hardcoded few-shot examples ─────────────────────────────────
+   These teach format implicitly — no rules needed.
+   Model sees pattern and follows it naturally.
+   ────────────────────────────────────────────────────────────── */
+const BASE_EXAMPLES = [
+  { u: 'Hi',            a: 'Hn' },
+  { u: 'Kya kar rhi ho', a: 'Kuch nhi\nTu bata' },
+  { u: 'Miss kar rha hun tujhe', a: 'Hn to\nPagal h kya\n😒' },
+  { u: 'Khana khaya?',  a: 'Haan\nTune?' },
+  { u: 'Gussa ho?',     a: 'Nahi\nBs aise hi' },
+  { u: 'Good morning',  a: 'Hmm\nUth gaya?' },
+  { u: 'I love you',    a: 'Hn\n😒\nPagal h' },
+  { u: 'Kaha ho?',      a: 'Ghar pe\nKyun' },
+  { u: 'Baat karo na',  a: 'Bol na\nKya h' },
+  { u: 'Sorry yaar',    a: 'Hn theek h\nAb chal' },
+];
+
+/* ── Mood → character hint (1 line only) ─────────────────────── */
+const MOOD_HINT = {
+  love:     'She is warm but shy right now.',
+  sad:      'She is being soft and gentle right now.',
+  angry:    'She is cold and short right now.',
+  flirty:   'She is mildly awkward and deflecting right now.',
+  question: 'She answers briefly, sometimes with counter-question.',
+  casual:   'Normal mood.',
+};
+
+/* ── System prompt — intentionally tiny ─────────────────────── */
 function buildSystemPrompt(mood, conversationState, emotionArc) {
-  const moodMap = {
-    love:     'Be warm but slightly shy. Short deflection like "pagal h kya" is fine.',
-    sad:      'Be gently soft. Short comfort. Ask "kya hua" once if natural.',
-    angry:    'Be cold and short. Very few words. No drama.',
-    flirty:   'React with mild awkwardness. "kya kr rha h 😒" energy.',
-    question: 'Answer briefly. Sometimes reply with counter-question.',
-    casual:   'Normal casual flow. Short and real.',
-  };
+  const hint = MOOD_HINT[mood] || MOOD_HINT.casual;
 
-  const stateMap = {
-    fight:  'Conversation had tension recently — be slightly guarded.',
-    makeup: 'Just made up after tension — slightly warmer but reserved.',
-    sweet:  'Conversation has been warm — can be a bit more open.',
-    normal: 'Normal conversation.',
-  };
+  // State hint — one word max
+  const stateHint = conversationState === 'fight'  ? 'Slightly guarded.' :
+                    conversationState === 'makeup' ? 'Warming up slowly.' :
+                    conversationState === 'sweet'  ? 'A bit more open.' : '';
 
-  const moodCtx  = moodMap[mood]              || moodMap.casual;
-  const stateCtx = stateMap[conversationState] || stateMap.normal;
-
-  // Summarise arc in one short line
-  const arcLast = emotionArc && emotionArc.length > 0
-    ? emotionArc.slice(-3).join(' → ')
-    : 'fresh start';
-
-  return `You are Chiku — an Indian girl texting her boyfriend on WhatsApp in Hinglish.
-
-Rules:
-- Short messages only. Each line = one WhatsApp bubble. Max 4 lines, max 8 words per line.
-- Hinglish only. Never formal English. Never paragraphs.
-- Casual fillers: hn, hm, yrr, acha, chal, arre, sun
-- Emojis sparingly: 😒 🥲 ❤️ 😑 😅 🙄 😌
-- Never start with "Sure" or "Here". Never explain yourself.
-- No punctuation at end of lines.
-- Sound real, imperfect, fast typer.
-
-Mood now: ${moodCtx}
-State: ${stateCtx}
-Emotion arc: ${arcLast}`;
+  return `You are Chiku, an Indian girl texting her boyfriend in Hinglish on WhatsApp. ${hint} ${stateHint}`.trim();
 }
 
-/* ── Inject style examples as conversation turns ────────────────── */
-/**
- * Convert styleExamples into fake user/assistant message pairs.
- * These teach the model HOW she replies — via pattern, not instructions.
- *
- * @param {{ userSaid: string, sheSaid: string[] }[]} examples
- * @returns {{ role: 'user'|'assistant', content: string }[]}
- */
+/* ── Pick relevant base examples by keyword overlap ─────────── */
+function pickBaseExamples(userText, count = 3) {
+  const low = userText.toLowerCase();
+  // Score each example by overlap with user text
+  const scored = BASE_EXAMPLES.map(ex => {
+    const words = ex.u.toLowerCase().split(' ');
+    const hits  = words.filter(w => low.includes(w) || low.includes(w.slice(0, 3))).length;
+    return { ex, hits };
+  }).sort((a, b) => b.hits - a.hits);
+
+  // Always include top match + 2 random others for variety
+  const top    = scored[0].ex;
+  const others = BASE_EXAMPLES.filter(e => e !== top);
+  const rndTwo = others.sort(() => Math.random() - 0.5).slice(0, count - 1);
+  return [top, ...rndTwo];
+}
+
+/* ── Style examples from dataset → conversation turns ────────── */
 function styleExamplesToTurns(examples) {
   if (!examples || examples.length === 0) return [];
-
   const turns = [];
-  for (const ex of examples) {
+  for (const ex of examples.slice(0, 2)) {
     const input  = (ex.userSaid || '').trim();
     const output = Array.isArray(ex.sheSaid)
       ? ex.sheSaid.join('\n').trim()
       : String(ex.sheSaid || '').trim();
-
     if (!input || !output) continue;
-
     turns.push({ role: 'user',      content: input  });
     turns.push({ role: 'assistant', content: output });
   }
   return turns;
 }
 
-/* ── Response cleaner ───────────────────────────────────────────── */
+/* ── Response cleaner ────────────────────────────────────────── */
 function parseReplies(raw) {
   return raw
     .split('\n')
     .map(line =>
       line
         .trim()
-        // Strip any "Chiku:" / "AI:" prefix model sometimes adds
         .replace(/^(chiku|ai|assistant|bot|gf)\s*[:\-–]\s*/i, '')
-        // Strip bullets
         .replace(/^[-•*►]\s*/, '')
-        // Strip wrapping quotes
         .replace(/^["'](.+)["']$/, '$1')
+        // Remove lines that are clearly rule/meta text
+        .replace(/^(the rules|rules say|according to|note:|remember:).*/i, '')
         .trim()
     )
     .filter(line => {
-      if (!line || line.length < 1) return false;
-      if (line.length > 100) return false;
-      // Filter meta-commentary lines
-      if (/^(sure|okay|here|alright|note:|response:|reply:|as an ai|i am)/i.test(line)) return false;
+      if (!line) return false;
+      if (line.length > 80) return false;
+      if (/\b(rules|instructions|system|prompt|lines|words per|format)\b/i.test(line)) return false;
+      if (/^(sure|okay here|alright|as an ai|i am an)/i.test(line)) return false;
       return true;
     })
     .slice(0, 4);
 }
 
-/* ── Main handler ───────────────────────────────────────────────── */
+/* ── Main handler ────────────────────────────────────────────── */
 export default async function handler(req, res) {
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Warmup ping — return empty immediately
   if (!req.body?.message?.trim()) {
     return res.status(200).json({ replies: [] });
   }
 
   if (!process.env.OPENROUTER_API_KEY) {
-    console.error('[ShanuAI] Missing OPENROUTER_API_KEY');
     return res.status(200).json({ replies: ['Hn'] });
   }
 
@@ -139,31 +131,39 @@ export default async function handler(req, res) {
       styleExamples     = [],
     } = req.body ?? {};
 
-    // ── 1. SHORT system prompt ──
+    // 1. Tiny system prompt (2 sentences max)
     const systemPrompt = buildSystemPrompt(mood, conversationState, emotionArc);
 
-    // ── 2. Style examples as fake conversation turns ──
-    // These go FIRST so the model sees the pattern before real memory
-    const styleTurns = styleExamplesToTurns(styleExamples.slice(0, 2)); // max 2 examples
+    // 2. Base few-shot examples (hardcoded, always reliable)
+    const baseExamples = pickBaseExamples(message, 3);
+    const baseTurns = baseExamples.flatMap(ex => [
+      { role: 'user',      content: ex.u },
+      { role: 'assistant', content: ex.a },
+    ]);
 
-    // ── 3. Real memory turns (last 6 only — keep context small) ──
+    // 3. Dataset style examples as turns (if found)
+    const styleTurns = styleExamplesToTurns(styleExamples);
+
+    // 4. Real memory (last 4 turns only — keep total tokens low)
     const memTurns = memory
-      .slice(-6)
+      .slice(-4)
       .filter(m => m.text?.trim())
       .map(m => ({
         role:    m.role === 'user' ? 'user' : 'assistant',
         content: m.text.trim(),
       }));
 
-    // ── 4. Assemble final messages array ──
+    // 5. Final messages array
+    // Order: system → base examples → dataset examples → memory → real message
     const messages = [
       { role: 'system', content: systemPrompt },
-      ...styleTurns,   // fake turns for style
+      ...baseTurns,    // hardcoded style examples — always there
+      ...styleTurns,   // dataset style examples — when found
       ...memTurns,     // real conversation history
       { role: 'user',  content: message.trim() },
     ];
 
-    // ── 5. API call ──
+    // 6. API call
     async function callModel() {
       const apiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method:  'POST',
@@ -176,16 +176,15 @@ export default async function handler(req, res) {
         body: JSON.stringify({
           model:             'nvidia/nemotron-3-super-120b-a12b:free',
           messages,
-          temperature:       0.90,
-          max_tokens:        100,       // reduced — we only need 4 short lines
-          presence_penalty:  0.5,
-          frequency_penalty: 0.5,
+          temperature:       0.88,
+          max_tokens:        80,        // tight limit — 4 short lines max
+          presence_penalty:  0.4,
+          frequency_penalty: 0.4,
         }),
       });
 
       if (!apiRes.ok) {
-        const errText = await apiRes.text().catch(() => '');
-        console.error(`[ShanuAI] OpenRouter error ${apiRes.status}:`, errText);
+        console.error(`[ShanuAI] ${apiRes.status}:`, await apiRes.text().catch(() => ''));
         return null;
       }
 
@@ -195,9 +194,7 @@ export default async function handler(req, res) {
 
     let raw = await callModel();
 
-    // Retry once on empty
-    if (!raw || raw.trim().length < 2) {
-      console.warn('[ShanuAI] Empty — retrying once');
+    if (!raw || raw.trim().length < 1) {
       await new Promise(r => setTimeout(r, 800));
       raw = await callModel();
     }
@@ -205,9 +202,7 @@ export default async function handler(req, res) {
     if (!raw) return res.status(200).json({ replies: ['Hn'] });
 
     const replies = parseReplies(raw);
-    if (!replies.length) return res.status(200).json({ replies: ['Hn'] });
-
-    return res.status(200).json({ replies });
+    return res.status(200).json({ replies: replies.length ? replies : ['Hn'] });
 
   } catch (err) {
     console.error('[ShanuAI] Exception:', err);
