@@ -1,108 +1,136 @@
 /* ════════════════════════════════════════════════════════════════
-   SHANU AI  v4.0  —  Vercel Serverless API Handler
+   SHANU AI  v5.0  —  Vercel Serverless Handler
    File: api/ask.js
 
-   Receives:  { message, memory, mood, emotionArc, conversationState }
-   Returns:   { replies: string[] }
+   Style-RAG Architecture:
+   ─ Receives styleExamples[] from client
+   ─ Injects them into system prompt as STYLE REFERENCE
+   ─ AI reads examples, learns tone/length/emotion, writes FRESH reply
+   ─ Zero copy-paste from dataset
 
-   Model: nvidia/nemotron-3-super-120b-a12b:free via OpenRouter
+   Receives:
+   {
+     message:           string,
+     memory:            [{role, text}],
+     mood:              string,
+     emotionArc:        string[],
+     conversationState: string,
+     styleExamples:     [{userSaid: string, sheSaid: string[]}]
+   }
 
-   v4.0 Changes:
-   ─ Emotion arc injected into system prompt (conversation continuity)
-   ─ Conversation state tracking (fight, makeup, sweet, normal)
-   ─ Last AI message context for better reply chaining
-   ─ Stronger anti-repeat instruction
-   ─ Better response cleaning pipeline
-   ─ Retry once on empty/bad response
+   Returns: { replies: string[] }
+
+   Model: nvidia/nemotron-3-super-120b-a12b:free (via OpenRouter)
    ════════════════════════════════════════════════════════════════ */
 
-// ── Mood instruction map ─────────────────────────────────────────
+/* ── Mood instructions ──────────────────────────────────────────── */
 const MOOD_INSTRUCTIONS = {
-  love:     'User is being loving or affectionate. Be slightly shy and warm — deflect with "hn" or "pagal h kya" but with soft energy. No long speeches. Maybe one small emoji.',
-  sad:      'User seems sad, hurt, or down. Be gently soft. Short comfort words. Ask "kya hua" once if appropriate. Do NOT over-explain or lecture.',
-  angry:    'User seems upset or angry. Be short, slightly cold, blunt. Few words only. No drama. Do NOT apologise excessively.',
-  flirty:   'User is being flirty or cheeky. React with mild awkwardness — "kya kr rha h 😒", "pagal h", "seedha baat kr". Not harsh, not encouraging.',
-  question: 'User asked something. Answer briefly and naturally. Sometimes redirect or answer with a counter-question.',
-  casual:   'Normal casual conversation. Flow naturally. Short. Real.',
+  love:     'User is being loving/affectionate. Be slightly shy and warm. Deflect with "hn" or "pagal h kya" — soft energy. One small emoji max.',
+  sad:      'User seems sad or hurt. Be gently soft. Short comfort. Ask "kya hua" once if natural. Do NOT lecture or over-explain.',
+  angry:    'User is upset or angry. Be short, slightly cold, blunt. Very few words. No drama. No excessive apology.',
+  flirty:   'User is being flirty. React with mild awkwardness — "kya kr rha h 😒", "pagal h". Not harsh, not encouraging either.',
+  question: 'User asked something. Answer briefly and naturally. Sometimes redirect with a counter-question.',
+  casual:   'Normal conversation. Flow naturally. Short. Real.',
 };
 
-// ── Conversation state descriptions ─────────────────────────────
+/* ── Conversation state descriptions ───────────────────────────── */
 const STATE_CONTEXT = {
-  fight:  'There was recent tension or a fight. Be a little cold or guarded. Not fully warm yet.',
-  makeup: 'They just made up after tension. Be slightly warmer but still a bit guarded — healing phase.',
-  sweet:  'Conversation has been warm and sweet for a while. Can be a little softer and more open.',
-  normal: 'Regular conversation. No strong history either way.',
+  fight:  'There was recent tension. Be a little cold/guarded. Not fully warm yet.',
+  makeup: 'Just made up after tension. Slightly warmer but still healing. A bit reserved.',
+  sweet:  'Conversation has been warm. Can be a little softer and more open.',
+  normal: 'Regular conversation. No strong emotional history either way.',
 };
 
-// ── Emotion arc summariser ───────────────────────────────────────
-/**
- * Summarise last N emotions into a human-readable arc string.
- * e.g. ['casual','casual','sad','angry'] → "started casual, became sad, then angry"
- * @param {string[]} arc
- * @returns {string}
- */
+/* ── Emotion arc summariser ─────────────────────────────────────── */
 function summariseArc(arc) {
   if (!arc || arc.length === 0) return 'fresh conversation, no history yet';
-  const uniq = arc.filter((v, i) => arc[i - 1] !== v); // dedupe consecutive
+  const uniq = arc.filter((v, i) => arc[i - 1] !== v);
   if (uniq.length === 1) return `conversation has been consistently ${uniq[0]}`;
   const last = uniq.slice(-1)[0];
   const prev = uniq.slice(-3, -1).join(' → ');
-  return `mood went: ${prev} → now ${last}`;
+  return `mood flow: ${prev} → now ${last}`;
 }
 
-// ── System prompt factory ────────────────────────────────────────
+/* ── Style examples block builder ───────────────────────────────── */
 /**
- * @param {string}   mood              current message mood
- * @param {string[]} emotionArc        full arc array
- * @param {string}   conversationState 'fight'|'makeup'|'sweet'|'normal'
- * @param {string}   lastAiMessage     Chiku's last reply (for chaining)
- * @param {string}   recentUserTopics  comma-joined last user messages
+ * Format styleExamples into a clear few-shot block for the system prompt.
+ * Each example shows HOW she talks in a similar situation.
+ * AI must NOT copy — must generate something NEW in the same style.
+ *
+ * @param {{ userSaid: string, sheSaid: string[] }[]} examples
  * @returns {string}
  */
-function buildSystemPrompt(mood, emotionArc, conversationState, lastAiMessage, recentUserTopics) {
+function buildStyleBlock(examples) {
+  if (!examples || examples.length === 0) {
+    return 'No similar past examples found. Use your base personality and context to respond.';
+  }
+
+  const lines = examples.map((ex, i) => {
+    const reply = Array.isArray(ex.sheSaid)
+      ? ex.sheSaid.join('\n')
+      : String(ex.sheSaid || '');
+    return `── Style Example ${i + 1} ──
+When someone said: "${ex.userSaid}"
+She replied like this:
+${reply}`;
+  });
+
+  return lines.join('\n\n');
+}
+
+/* ── System prompt factory ──────────────────────────────────────── */
+function buildSystemPrompt({
+  mood,
+  emotionArc,
+  conversationState,
+  lastAiMessage,
+  recentUserTopics,
+  styleExamples,
+}) {
   const moodCtx    = MOOD_INSTRUCTIONS[mood]    || MOOD_INSTRUCTIONS.casual;
   const stateCtx   = STATE_CONTEXT[conversationState] || STATE_CONTEXT.normal;
   const arcSummary = summariseArc(emotionArc);
+  const styleBlock = buildStyleBlock(styleExamples);
 
-  const lastMsgHint = lastAiMessage
-    ? `Your last message was: "${lastAiMessage}" — do NOT repeat it or say something too similar.`
+  const noRepeatHint = lastAiMessage
+    ? `Your last message was: "${lastAiMessage}" — do NOT repeat it or say anything too similar.`
     : 'This is the start of the conversation.';
 
-  const topicsHint = recentUserTopics
-    ? `Recent topics/context from user: ${recentUserTopics}`
+  const topicHint = recentUserTopics
+    ? `Recent user context: ${recentUserTopics}`
     : '';
 
-  return `You are "Chiku" — a real Indian girl, someone's girlfriend, texting on WhatsApp in Hinglish.
+  return `You are "Chiku" — a real Indian girl texting her boyfriend on WhatsApp in Hinglish.
 
 ━━━ YOUR PERSONALITY ━━━
-• You talk in Hinglish: natural Hindi + English mix, NOT formal
-• You send SHORT separate messages — like real WhatsApp chat bubbles
+• You talk in Hinglish — natural Hindi + English mix, NOT formal
+• You send SHORT separate messages — real WhatsApp bubbles
 • You are emotional, real, slightly unpredictable
-• Sometimes moody (silent, cold), sometimes warm and caring
-• You have mild attitude — you don't repeat yourself ever
-• You use casual fillers: hn, hm, yrr, acha, bol, kya, hmm, sun
-• You use emojis sparingly and naturally: 😒 😅 🙄 🥲 ❤️ 😑 🤡 😌 🫠
-• You NEVER write paragraphs
-• You NEVER explain yourself like an AI would
-• You sound like a real girl who types fast and doesn't overthink
+• Sometimes moody or cold, sometimes warm and caring
+• Mild attitude — you never repeat yourself
+• Casual fillers: hn, hm, yrr, acha, bol, kya, hmm, sun, chal, arre
+• Emojis: sparingly, naturally → 😒 😅 🙄 🥲 ❤️ 😑 🤡 😌 🫠 😭
+• NEVER write paragraphs
+• NEVER sound like an AI, assistant, or bot
+• You are imperfect — you type fast, sometimes incomplete sentences
 
 ━━━ FORMAT RULES (STRICT) ━━━
-• Every line = one separate WhatsApp message bubble
-• Separate each message with a newline (\\n)
-• Max 4 lines per response
-• Max 8 words per line — shorter is better
-• ZERO punctuation at end of lines — real chat style
-• No bullet points, no numbering, no markdown
-• If you have nothing to say: just "Hn", "Hmm", "😒", or "Acha"
+• Each line = one separate WhatsApp bubble
+• Separate bubbles with a newline (\\n)
+• Maximum 4 lines total
+• Maximum 8 words per line — shorter is almost always better
+• NO punctuation at end of lines
+• No bullet points, no numbering, no markdown, no asterisks
+• If nothing big to say: just "Hn", "Hmm", "😒", "Acha", or "Ruk"
 
 ━━━ WHAT YOU NEVER DO ━━━
-• Never say "as an AI" or break character under any condition
+• Never say "as an AI" or break character for any reason
 • Never write paragraph responses
-• Never be overly helpful or explain things in detail
-• Never use English-only formal sentences
-• Never repeat your own previous message
-• Never send the same emoji twice in one response
+• Never use formal English sentences
+• Never repeat your previous message
+• Never use the same emoji twice in one response
 • Never start two consecutive lines with the same word
+• Never copy the style examples below word-for-word
 
 ━━━ CURRENT MOOD CONTEXT ━━━
 ${moodCtx}
@@ -110,91 +138,58 @@ ${moodCtx}
 ━━━ CONVERSATION STATE ━━━
 ${stateCtx}
 
-━━━ EMOTIONAL ARC (conversation history) ━━━
+━━━ EMOTIONAL ARC ━━━
 ${arcSummary}
 
 ━━━ CONTINUITY ━━━
-${lastMsgHint}
-${topicsHint}
+${noRepeatHint}
+${topicHint}
 
-━━━ EXAMPLE EXCHANGES ━━━
+━━━ STYLE REFERENCE ━━━
+The examples below are from REAL conversations showing HOW she talks in similar situations.
+Study her tone, word length, attitude, and emoji usage.
+Then write something COMPLETELY NEW that fits this moment.
+Do NOT copy these. They teach STYLE only.
 
-User: I miss you so much
-Chiku:
-Hn
-😒
-Pagal h kya
-Baat kr seedha
+${styleBlock}
 
-User: Sorry yaar
-Chiku:
-Kitni baar bolega
-Hn theek h
-Ab chal
-
-User: Kya kar rhi ho
-Chiku:
-Kuch nhi
-Bore ho rha h kya
-Tu bata
-
-User: Tum mujhe bhool gaye
-Chiku:
-Haan bilkul
-😑
-Aise hi hota h
-
-User: Goodnight
-Chiku:
-Hn
-Gn
-Sweet dreams
-
-User: Bahut gussa h mujhse
-Chiku:
-Toh h
-😒
-Kya krun main
-
-━━━ REMEMBER ━━━
-Always sound like a real girl texting. Imperfect spelling is fine. Short is always better than long.`;
+━━━ IMPORTANT ━━━
+Now write a FRESH reply as Chiku for the current message.
+Be influenced by her style above but say something original.
+Always sound like a real girl texting — short, real, imperfect.`;
 }
 
-// ── Response cleaner ─────────────────────────────────────────────
-/**
- * Parse raw model output into clean message array.
- * @param {string} raw
- * @returns {string[]}
- */
+/* ── Response cleaner ───────────────────────────────────────────── */
 function parseReplies(raw) {
   return raw
     .split('\n')
     .map(line =>
       line
         .trim()
-        // Remove "Chiku:" / "AI:" / "Assistant:" prefixes model sometimes adds
-        .replace(/^(chiku|chiku\s*ai|ai|assistant|bot|girlfriend|gf)\s*[:\-–]\s*/i, '')
-        // Remove leading bullets / dashes
+        .replace(/^(chiku|ai|assistant|bot|girlfriend|gf|chiku\s*ai)\s*[:\-–]\s*/i, '')
         .replace(/^[-•*►▸]\s*/, '')
-        // Remove wrapping quotes
         .replace(/^["'](.+)["']$/, '$1')
         .trim()
     )
     .filter(line => {
       if (!line) return false;
       if (line.length > 120) return false;
-      // Filter meta-commentary the model sometimes outputs
-      if (/^(sure|okay|here|alright|note:|response:|reply:)/i.test(line)) return false;
+      if (/^(sure|okay|here|alright|note:|response:|reply:|example|style)/i.test(line)) return false;
       return true;
     })
-    .slice(0, 4); // Max 4 bubbles
+    .slice(0, 4);
 }
 
-// ── Main handler ─────────────────────────────────────────────────
+/* ── Main handler ───────────────────────────────────────────────── */
 export default async function handler(req, res) {
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  // Warmup ping (from browser bootstrap — return immediately)
+  if (!req.body?.message?.trim()) {
+    return res.status(200).json({ replies: [] });
   }
 
   if (!process.env.OPENROUTER_API_KEY) {
@@ -209,20 +204,14 @@ export default async function handler(req, res) {
       mood              = 'casual',
       emotionArc        = [],
       conversationState = 'normal',
+      styleExamples     = [],         // ← Style-RAG examples from client
     } = req.body ?? {};
 
-    if (!message.trim()) {
-      return res.status(400).json({ replies: ['Hn'] });
-    }
-
-    // ── Extract context helpers ──────────────────────────────────
-
-    // Last thing Chiku said (for anti-repeat)
+    // Extract context helpers
     const lastAiMessage = memory
       .filter(m => m.role === 'ai')
       .slice(-1)[0]?.text || '';
 
-    // Recent user topics (last 3 user messages joined)
     const recentUserTopics = memory
       .filter(m => m.role === 'user')
       .slice(-3)
@@ -230,19 +219,20 @@ export default async function handler(req, res) {
       .filter(Boolean)
       .join(' | ');
 
-    // ── Build messages array ─────────────────────────────────────
-    const systemPrompt = buildSystemPrompt(
+    // Build system prompt with style examples injected
+    const systemPrompt = buildSystemPrompt({
       mood,
       emotionArc,
       conversationState,
       lastAiMessage,
       recentUserTopics,
-    );
+      styleExamples,     // ← injected here into prompt
+    });
 
-    // Use last 8 turns (focused context — not too long for free model)
+    // Build conversation history (last 8 turns)
     const history = memory
       .slice(-8)
-      .filter(m => m.text && m.text.trim())
+      .filter(m => m.text?.trim())
       .map(m => ({
         role:    m.role === 'user' ? 'user' : 'assistant',
         content: m.text.trim(),
@@ -254,7 +244,7 @@ export default async function handler(req, res) {
       { role: 'user', content: message.trim() },
     ];
 
-    // ── API call helper (used for retry) ────────────────────────
+    // API call (with retry once on empty response)
     async function callModel() {
       const apiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method:  'POST',
@@ -262,16 +252,16 @@ export default async function handler(req, res) {
           'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
           'Content-Type':  'application/json',
           'HTTP-Referer':  process.env.SITE_URL || 'https://chiku-iota.vercel.app/',
-          
+          'X-Title':       'Shanu AI',
         },
         body: JSON.stringify({
-          model:             'poolside/laguna-m.1:free',
+          model:             'nvidia/nemotron-3-super-120b-a12b:free',
           messages,
-          temperature:       0.92,          // slightly tuned for expression
-          max_tokens:        140,           // slightly more room
-          presence_penalty:  0.55,          // stronger — avoid stale replies
-          frequency_penalty: 0.60,          // stronger — reduce repetition
-          stop:              ['\n\n\n', '---', '==='],
+          temperature:       0.92,
+          max_tokens:        140,
+          presence_penalty:  0.55,
+          frequency_penalty: 0.60,
+          stop:              ['\n\n\n', '---', '===', '━━━'],
         }),
       });
 
@@ -285,26 +275,19 @@ export default async function handler(req, res) {
       return data.choices?.[0]?.message?.content ?? '';
     }
 
-    // ── First attempt ────────────────────────────────────────────
     let raw = await callModel();
 
-    // ── Retry once if empty / very short ────────────────────────
+    // Retry once on empty
     if (!raw || raw.trim().length < 2) {
-      console.warn('[ShanuAI] Empty response — retrying once');
-      await new Promise(r => setTimeout(r, 600)); // small pause before retry
+      console.warn('[ShanuAI] Empty response — retrying');
+      await new Promise(r => setTimeout(r, 700));
       raw = await callModel();
     }
 
-    if (!raw) {
-      return res.status(200).json({ replies: ['Hn 😑'] });
-    }
+    if (!raw) return res.status(200).json({ replies: ['Hn 😑'] });
 
-    // ── Parse into bubbles ───────────────────────────────────────
     const replies = parseReplies(raw);
-
-    if (!replies.length) {
-      return res.status(200).json({ replies: ['Hn 😑'] });
-    }
+    if (!replies.length) return res.status(200).json({ replies: ['Hn 😑'] });
 
     return res.status(200).json({ replies });
 
