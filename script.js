@@ -1,5 +1,5 @@
 /* ════════════════════════════════════════════════════════════════
-   SHANU AI  v3.0  —  Production Chatbot Engine
+   CHIKU  v4.0  —  Chat Engine + Pro UI Features
    ════════════════════════════════════════════════════════════════
    Architecture:
      1.  CONFIG              — tuneable constants
@@ -10,9 +10,11 @@
      6.  RESPONSE VARIATOR   — randomised selection & mood tweaks
      7.  MEMORY MANAGER      — rolling conversation context
      8.  UI MANAGER          — DOM rendering helpers
-     9.  MAIN REPLY ENGINE   — orchestrates all modules
-    10.  AI FALLBACK          — OpenRouter API call
-    11.  EVENT WIRING         — input / send / clear
+     9.  NEW FEATURES        — profile modal, quick replies, reactions,
+                               seen ticks, scroll FAB, char counter
+    10.  MAIN REPLY ENGINE   — orchestrates all modules
+    11.  AI FALLBACK          — OpenRouter API call
+    12.  EVENT WIRING         — input / send / clear + new events
    ════════════════════════════════════════════════════════════════ */
 
 'use strict';
@@ -21,33 +23,27 @@
    1. CONFIG
    ─────────────────────────────────────────────────────────────── */
 const CFG = {
-  MEMORY_LIMIT:       15,    // max conversation turns stored
-  MATCH_THRESHOLD:    0.16,  // min combined similarity score
-  TOP_K:              5,     // candidate pool for random pick
-  VARIATION_FLOOR:    0.72,  // fraction of top score; candidates above get into pool
+  MEMORY_LIMIT:       15,
+  MATCH_THRESHOLD:    0.16,
+  TOP_K:              5,
+  VARIATION_FLOOR:    0.72,
 
-  // Typing simulation
-  CHARS_PER_MS:       22,    // typing speed (chars / second ≈ this * 1000)
-  TYPE_DELAY_MIN:     380,   // ms — fastest a reply can appear
-  TYPE_DELAY_MAX:     2100,  // ms — cap for very long messages
-  TYPE_VARIANCE:      0.28,  // ±% randomness added to delay
-  INTER_MSG_PAUSE:    300,   // ms gap between consecutive ai messages
-  FALLBACK_DELAY:     800,   // extra base delay before AI API messages
+  CHARS_PER_MS:       22,
+  TYPE_DELAY_MIN:     380,
+  TYPE_DELAY_MAX:     2100,
+  TYPE_VARIANCE:      0.28,
+  INTER_MSG_PAUSE:    300,
+  FALLBACK_DELAY:     800,
 };
 
 /* ────────────────────────────────────────────────────────────────
    2. HINGLISH NORMALIZER
    ─────────────────────────────────────────────────────────────── */
-
-/** Canonical forms for common Hinglish spelling variations */
 const HMAP = {
-  // Affirmations
   hn:'haan', hnn:'haan', hna:'haan', hmm:'haan', hm:'haan',
   ha:'haan', haa:'haan', haaa:'haan', han:'haan', haan:'haan',
   h:'hai', hai:'hai',
-  // Negations
   nhi:'nahi', ni:'nahi', nai:'nahi', naa:'nahi', na:'nahi', nhn:'nahi',
-  // Verbs
   kr:'kar', kro:'karo', krna:'karna', krke:'karke', krega:'karega',
   krdunga:'karunga', kardena:'karna', karde:'karo',
   bta:'batao', bata:'batao', btao:'batao', bataao:'batao',
@@ -58,23 +54,18 @@ const HMAP = {
   aa:'aao', aaja:'aao',
   ja:'jao', jaa:'jao',
   so:'soo', soja:'soo',
-  // Questions
   kyu:'kyun', kyun:'kyun', kyo:'kyun',
   kya:'kya', kia:'kya', kyaa:'kya',
   kab:'kab', kaha:'kahan', kahan:'kahan',
   kaun:'kaun', kon:'kaun',
-  // Pronouns
   m:'main', mai:'main', me:'mein', main:'main', mein:'mein',
   tu:'tu', tum:'tum', aap:'aap',
   mera:'mera', tera:'tera', apna:'apna',
-  // Adverbs / time
   kal:'kal', aaj:'aaj', abhi:'abhi',
   fr:'phir', fir:'phir', phir:'phir',
   vo:'woh', wo:'woh', woh:'woh',
   bhi:'bhi', ab:'ab',
-  // Qualifiers
   bohot:'bahut', bhot:'bahut', bht:'bahut', bahut:'bahut',
-  // Common words
   yrr:'yaar', yar:'yaar', yr:'yaar',
   plz:'please', pls:'please',
   acha:'achha', accha:'achha', achha:'achha',
@@ -85,15 +76,10 @@ const HMAP = {
   love:'love', miss:'miss',
 };
 
-/**
- * Normalise text: lowercase → strip non-alpha/space/Hindi → map Hinglish variants
- * @param {string} text
- * @returns {string}
- */
 function normalise(text) {
   if (!text) return '';
   const t = text.toLowerCase()
-    .replace(/[^\w\s\u0900-\u097F]/g, ' ')  // keep Hindi unicode range + alphanums
+    .replace(/[^\w\s\u0900-\u097F]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return t.split(' ').map(w => HMAP[w] || w).join(' ');
@@ -102,26 +88,11 @@ function normalise(text) {
 /* ────────────────────────────────────────────────────────────────
    3. DATASET CLEANER
    ─────────────────────────────────────────────────────────────── */
-
-/**
- * Strip embedded timestamps, reaction labels, and system text
- * that appear in raw WhatsApp chat exports.
- *
- * Patterns removed:
- *   ❤ꕶʜɪᴠᴀ ꕶᴀɪɴɪ (Jul 18, 2024 6:44 am)
- *   (edited)
- *   wasn't notified about this message…
- *   sent an attachment.
- *   मैसेज को लाइक किया है
- *   Standalone (Month DD, YYYY HH:MM am/pm)
- * @param {string} text
- * @returns {string}
- */
 function cleanEntry(text) {
   if (!text) return '';
   return text
-    .replace(/[❤♥ꕶ][^\(]{0,40}\([^)]{5,50}\)/g, '')          // name+timestamp
-    .replace(/\((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s*\d{4}[^)]*\)/gi, '') // standalone timestamp
+    .replace(/[❤♥ꕶ][^\(]{0,40}\([^)]{5,50}\)/g, '')
+    .replace(/\((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s*\d{4}[^)]*\)/gi, '')
     .replace(/wasn[''`]t notified[^.]*\./gi, '')
     .replace(/sent an attachment\.?/gi, '')
     .replace(/\(edited\)/gi, '')
@@ -133,63 +104,38 @@ function cleanEntry(text) {
 /* ────────────────────────────────────────────────────────────────
    4. FUZZY MATCHER
    ─────────────────────────────────────────────────────────────── */
-
-/**
- * Dice coefficient on character bigrams.
- * Tolerates typos, abbreviations, partial words.
- * @param {string} a
- * @param {string} b
- * @returns {number} 0–1
- */
 function dice(a, b) {
   if (a === b) return 1;
   if (a.length < 2 || b.length < 2) return 0;
-
-  /** @param {string} s @returns {Set<string>} */
   const bigrams = s => {
     const bg = new Set();
     for (let i = 0; i < s.length - 1; i++) bg.add(s[i] + s[i + 1]);
     return bg;
   };
-
   const A = bigrams(a), B = bigrams(b);
   let common = 0;
   for (const bg of A) if (B.has(bg)) common++;
   return (2 * common) / (A.size + B.size);
 }
 
-/**
- * Jaccard word overlap — good for Hinglish phrase matching.
- * @param {string} a
- * @param {string} b
- * @returns {number} 0–1
- */
 function jaccard(a, b) {
   const aW = new Set(a.split(' ').filter(w => w.length > 1));
   const bW = new Set(b.split(' ').filter(w => w.length > 1));
   if (!aW.size || !bW.size) return 0;
-
   let common = 0;
   for (const w of aW) if (bW.has(w)) common++;
   return common / (aW.size + bW.size - common);
 }
 
-/**
- * Partial word match — handles single-word messages like "Hm", "?", "Ok".
- * @param {string} query
- * @param {string} target
- * @returns {number} 0–1
- */
 function partialMatch(query, target) {
   const qW = query.split(' ').filter(w => w.length > 1);
   const tW = target.split(' ').filter(w => w.length > 1);
   if (!qW.length || !tW.length) return 0;
-
   let score = 0;
   for (const q of qW) {
     for (const t of tW) {
-      if (t === q)            { score += 1.0; continue; }
-      if (t.startsWith(q) || q.startsWith(t)) { score += 0.72; continue; }
+      if (t === q)                            { score += 1.0;       continue; }
+      if (t.startsWith(q) || q.startsWith(t)) { score += 0.72;      continue; }
       const d = dice(q, t);
       if (d > 0.55) score += d * 0.6;
     }
@@ -197,37 +143,25 @@ function partialMatch(query, target) {
   return Math.min(score / qW.length, 1);
 }
 
-/**
- * Combined similarity: weights optimised for short Hinglish chat.
- * @param {string} userNorm   normalised user text
- * @param {string} targetNorm normalised dataset text
- * @returns {number} 0–1
- */
 function similarity(userNorm, targetNorm) {
   return 0.30 * dice(userNorm, targetNorm)
        + 0.45 * jaccard(userNorm, targetNorm)
        + 0.25 * partialMatch(userNorm, targetNorm);
 }
 
-/** Shared dataset state */
-let dataset     = [];
-let dataReady   = false;
+let dataset   = [];
+let dataReady = false;
 
-/**
- * Fetch, clean and index the dataset JSON.
- */
 async function loadDataset() {
   try {
     const res = await fetch('dataset.json');
     const raw = await res.json();
-
     dataset = raw
       .map(item => ({
         input:  item.input.map(cleanEntry).filter(Boolean),
         output: item.output.map(cleanEntry).filter(Boolean),
       }))
       .filter(item => item.input.length > 0 && item.output.length > 0);
-
     console.info(`✅ Dataset loaded — ${dataset.length} entries`);
   } catch (err) {
     console.warn('⚠️ Dataset unavailable, AI fallback only:', err);
@@ -236,41 +170,26 @@ async function loadDataset() {
   }
 }
 
-/**
- * Find the top-K best matching dataset entries for a user message.
- * Context memory provides a small boost to topically related items.
- *
- * @param {string}   userText
- * @param {object[]} memory   [{role, text}…]
- * @returns {{ item: object, score: number }[]}  sorted desc
- */
 function findMatches(userText, memory) {
   const uNorm = normalise(userText);
-
-  // Build a set of recent context keywords for boosting
   const ctxWords = new Set(
     memory.slice(-8)
       .filter(m => m.role === 'user')
       .flatMap(m => normalise(m.text).split(' '))
       .filter(w => w.length > 2)
   );
-
   const results = [];
-
   for (const item of dataset) {
-    // Score against combined input text
     const combined = item.input.join(' ');
     const cNorm    = normalise(combined);
     let   score    = similarity(uNorm, cNorm);
 
-    // Also score each individual input line; keep the best boost
     for (const line of item.input) {
       const lNorm = normalise(line);
       const ls    = similarity(uNorm, lNorm);
       if (ls > score) score = score * 0.15 + ls * 0.85;
     }
 
-    // Context relevance boost (max +0.12)
     const itemWords = new Set(cNorm.split(' ').filter(w => w.length > 2));
     let ctxBoost = 0;
     for (const kw of ctxWords) {
@@ -280,14 +199,12 @@ function findMatches(userText, memory) {
 
     if (score >= CFG.MATCH_THRESHOLD) results.push({ item, score });
   }
-
   return results.sort((a, b) => b.score - a.score).slice(0, CFG.TOP_K);
 }
 
 /* ────────────────────────────────────────────────────────────────
    5. MOOD DETECTOR
    ─────────────────────────────────────────────────────────────── */
-
 const MOODS = {
   love:    { keys: ['love','pyaar','pyar','miss','ilu','cute','baby','jaan','babu','❤️','🥰','😍','i love you','tujhse pyaar'], emoji:'❤️',  w:3 },
   sad:     { keys: ['sad','dukhi','rona','ro raha','akela','lonely','hurt','bura lag','dard','cry','😢','🥲','😭','rone'],       emoji:'🥲',  w:3 },
@@ -296,11 +213,6 @@ const MOODS = {
   question:{ keys: ['?','kyun','kyu','kya','kaisa','kab','kaha','kaun','batao','samjhao','why','what','when','how','bata'],     emoji:'🤔',  w:1 },
 };
 
-/**
- * Return the dominant mood string from user text.
- * @param {string} text
- * @returns {string} 'love' | 'sad' | 'angry' | 'flirty' | 'question' | 'casual'
- */
 function detectMood(text) {
   const low = text.toLowerCase();
   let best = 'casual', top = 0;
@@ -315,11 +227,6 @@ function detectMood(text) {
 /* ────────────────────────────────────────────────────────────────
    6. RESPONSE VARIATOR
    ─────────────────────────────────────────────────────────────── */
-
-/**
- * Mood-specific prefix / suffix snippets to inject into dataset replies.
- * Each value is an array — one is randomly chosen (can be '' for silence).
- */
 const MOOD_INJECTIONS = {
   love:    { pre: ['', 'Hn to 😒', ''], suf: ['😊', '', 'Hmm 😌', ''] },
   sad:     { pre: ['Kya hua', 'Arre', ''], suf: ['Mat ro yaar 🥲', 'Theek ho jaega', ''] },
@@ -329,41 +236,24 @@ const MOOD_INJECTIONS = {
   casual:  { pre: [], suf: [] },
 };
 
-/** Return random element from arr, or '' if empty */
 function rnd(arr) {
   if (!arr.length) return '';
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-/**
- * Optionally prepend/append mood-tuned short messages.
- * @param {string[]} msgs
- * @param {string}   mood
- * @returns {string[]}
- */
 function injectMoodFlair(msgs, mood) {
   const inj = MOOD_INJECTIONS[mood] || MOOD_INJECTIONS.casual;
   const out  = [...msgs];
-
   const pre = rnd(inj.pre || []);
   const suf = rnd(inj.suf || []);
-
   if (pre && Math.random() < 0.45) out.unshift(pre);
   if (suf && Math.random() < 0.38) out.push(suf);
-
   return out.filter(m => m.trim().length > 0);
 }
 
-/**
- * Pick a dataset match with controlled randomness:
- * any candidate within VARIATION_FLOOR% of the top score is eligible.
- * @param {{ item: object, score: number }[]} scored
- * @returns {object | null}  dataset item
- */
 function selectBest(scored) {
   if (!scored.length) return null;
   if (scored.length === 1) return scored[0].item;
-
   const threshold = scored[0].score * CFG.VARIATION_FLOOR;
   const pool = scored.filter(s => s.score >= threshold);
   return rnd(pool).item;
@@ -372,58 +262,45 @@ function selectBest(scored) {
 /* ────────────────────────────────────────────────────────────────
    7. MEMORY MANAGER
    ─────────────────────────────────────────────────────────────── */
-
-let memory = [];  // [{role:'user'|'ai', text:string, ts:number}]
+let memory = [];
 
 function memAdd(role, text) {
   memory.push({ role, text, ts: Date.now() });
   if (memory.length > CFG.MEMORY_LIMIT) memory.shift();
 }
 
-/** Return last N turns for API context */
 function memContext(n = 12) {
   return memory.slice(-n);
 }
 
 /* ────────────────────────────────────────────────────────────────
-   8. UI MANAGER
+   8. UI MANAGER  (core DOM helpers)
    ─────────────────────────────────────────────────────────────── */
 
-const chatBox     = document.getElementById('chat-box');
-const msgInput    = document.getElementById('msg-input');
-const sendBtn     = document.getElementById('send-btn');
-const typingWrap  = document.getElementById('typing-wrap');
-const headerStat  = document.getElementById('header-status');
-const clearBtn    = document.getElementById('clear-btn');
+/* ── DOM refs ── */
+const chatBox    = document.getElementById('chat-box');
+const msgInput   = document.getElementById('msg-input');
+const sendBtn    = document.getElementById('send-btn');
+const typingWrap = document.getElementById('typing-wrap');
+const headerStat = document.getElementById('header-status');
+const clearBtn   = document.getElementById('clear-btn');
 
-/** @type {DOMHighResTimeStamp} Tracks last user message time for avatar grouping */
 let lastSenderRole = null;
 
-/**
- * Format a Date object as H:MM AM/PM.
- * @param {Date} [d]
- * @returns {string}
- */
 function fmtTime(d = new Date()) {
-  return d.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit', hour12:true });
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
 /**
  * Render a chat bubble into #chat-box.
- * Does NOT insert source text into the message content — badge is CSS-only.
- *
- * @param {string}  text
- * @param {'user'|'ai'} sender
- * @param {string}  [source]   'dataset' | 'ai'
- * @param {boolean} [showAvatar]  show small avatar on ai bubbles
- * @param {string}  [mood]     show mood pip on first ai bubble in group
+ * Extended: user bubbles get a seen-tick; double-tap fires reaction.
  */
 function renderBubble(text, sender, source = 'dataset', showAvatar = true, mood = null) {
   const row = document.createElement('div');
   row.className = `msg-row ${sender}`;
   if (sender === 'ai' && !showAvatar) row.classList.add('hide-avatar');
 
-  // Tiny avatar (ai side only)
+  /* small avatar (AI side) */
   if (sender === 'ai') {
     const av = document.createElement('div');
     av.className = 'row-avatar';
@@ -431,12 +308,12 @@ function renderBubble(text, sender, source = 'dataset', showAvatar = true, mood 
     row.appendChild(av);
   }
 
-  // Bubble wrapper
+  /* bubble */
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
-  bubble.textContent = text;   // ← plain text only, no injected labels
+  bubble.textContent = text;
 
-  // Mood emoji pip (only on first ai message in a group)
+  /* mood pip (first AI bubble in a group only) */
   if (sender === 'ai' && mood && mood !== 'casual' && showAvatar) {
     const pip = document.createElement('span');
     pip.className = 'mood-pip';
@@ -444,7 +321,7 @@ function renderBubble(text, sender, source = 'dataset', showAvatar = true, mood 
     bubble.appendChild(pip);
   }
 
-  // Meta row: timestamp + source badge
+  /* meta row */
   const meta = document.createElement('div');
   meta.className = 'bubble-meta';
 
@@ -453,6 +330,7 @@ function renderBubble(text, sender, source = 'dataset', showAvatar = true, mood 
   time.textContent = fmtTime();
   meta.appendChild(time);
 
+  /* source badge (AI side) */
   if (sender === 'ai') {
     const badge = document.createElement('span');
     badge.className = `source-badge ${source === 'ai' ? 'badge-ai' : 'badge-real'}`;
@@ -460,43 +338,48 @@ function renderBubble(text, sender, source = 'dataset', showAvatar = true, mood 
     meta.appendChild(badge);
   }
 
+  /* seen tick (user side) */
+  if (sender === 'user') {
+    const tick = document.createElement('span');
+    tick.className = 'msg-tick';
+    tick.textContent = '✓✓';
+    tick.setAttribute('aria-hidden', 'true');
+    meta.appendChild(tick);
+    lastUserTickEl = tick;   // track for markSeen()
+  }
+
   bubble.appendChild(meta);
   row.appendChild(bubble);
   chatBox.appendChild(row);
 
-  // Smooth scroll after render
+  /* double-tap reaction */
+  attachReactionListener(row, bubble);
+
+  /* increment message counter */
+  totalMessages++;
+  statMsgsEl && (statMsgsEl.textContent = totalMessages);
+
   requestAnimationFrame(() => scrollDown());
   return row;
 }
 
-/** Smooth-scroll chat to bottom */
 function scrollDown() {
   chatBox.scrollTo({ top: chatBox.scrollHeight, behavior: 'smooth' });
 }
 
-/**
- * Show / hide the typing indicator and update header status.
- * @param {boolean} on
- */
 function setTyping(on) {
   if (on) {
     typingWrap.classList.remove('hidden');
-    headerStat.textContent = 'typing…';
+    headerStat.innerHTML = '<span class="status-pulse"></span>typing…';
     headerStat.classList.add('is-typing');
     requestAnimationFrame(() => scrollDown());
   } else {
     typingWrap.classList.add('hidden');
-    headerStat.textContent = 'Online';
+    headerStat.innerHTML = '<span class="status-pulse"></span>Online';
     headerStat.classList.remove('is-typing');
   }
 }
 
-/**
- * Compute a realistic typing delay for a given string.
- * Shorter texts are faster; there's random ±variance.
- * @param {string} text
- * @returns {number} milliseconds
- */
 function typingMs(text) {
   const base = Math.min(
     CFG.TYPE_DELAY_MIN + (text.length / CFG.CHARS_PER_MS) * 1000,
@@ -505,15 +388,8 @@ function typingMs(text) {
   return base * (1 - CFG.TYPE_VARIANCE / 2 + Math.random() * CFG.TYPE_VARIANCE);
 }
 
-/** Simple promise delay */
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
-/**
- * Deliver multiple AI messages with per-message typing simulation.
- * @param {string[]} messages
- * @param {string}   source   'dataset' | 'ai'
- * @param {string}   mood
- */
 async function deliver(messages, source = 'dataset', mood = null) {
   for (let i = 0; i < messages.length; i++) {
     const msg     = messages[i];
@@ -532,7 +408,6 @@ async function deliver(messages, source = 'dataset', mood = null) {
   setTyping(false);
 }
 
-/** Lock / unlock input during reply generation */
 let busy = false;
 function lock(on) {
   busy = on;
@@ -542,54 +417,216 @@ function lock(on) {
 }
 
 /* ────────────────────────────────────────────────────────────────
-   9. MAIN REPLY ENGINE
+   9. NEW FEATURES
    ─────────────────────────────────────────────────────────────── */
 
-/**
- * Orchestrates dataset matching → mood flair → delivery → AI fallback.
- * @param {string} userText
- */
+/* ── DOM refs (new) ── */
+const profileOverlay  = document.getElementById('profile-overlay');
+const profileCloseBtn = document.getElementById('profile-close');
+const avatarBtn       = document.getElementById('avatar-btn');
+const quickRepliesEl  = document.getElementById('quick-replies');
+const scrollFab       = document.getElementById('scroll-fab');
+const charCounter     = document.getElementById('char-counter');
+const profileMoodLbl  = document.getElementById('profile-mood-label');
+const statMsgsEl      = document.getElementById('stat-msgs');
+const statDaysEl      = document.getElementById('stat-days');
+
+/* ── State ── */
+let totalMessages  = 0;
+let currentMood    = 'casual';
+let lastUserTickEl = null;   // tick element of the last user bubble
+
+/* ── Mood label map ── */
+const MOOD_LABELS = {
+  love:     'Feeling loved today ❤️',
+  sad:      'A little down rn 🥲',
+  angry:    'Thodi gussa mood mein 😠',
+  flirty:   'Feeling flirty 😳',
+  question: 'Curious mode on 🤔',
+  casual:   'Feeling good today ✨',
+};
+
+/* ── Quick reply presets ── */
+const QUICK_REPLIES = {
+  love:     ['Tum bhi ❤️', 'Aww 🥺', 'Haha pagal h', 'Miss kar rha tha'],
+  sad:      ['Kya hua? 🥺', 'Baat karo na', "I'm here", 'Mat roo yaar'],
+  angry:    ['Sorry yaar 🙏', 'Gussa mat ho', 'Galti ho gayi', 'Sunn to…'],
+  flirty:   ['Haha 😂', 'Kya kr rha h 😒', 'Pagal h', 'Acha acha'],
+  question: ['Haan', 'Nahi yaar', 'Pata nahi', 'Tum batao?'],
+  casual:   ['Hn', 'Acha 😊', 'Theek h', 'Haha 😅'],
+};
+
+/* ── Days counter via localStorage ── */
+function getDaysCount() {
+  const KEY = 'chiku_first_visit';
+  try {
+    const stored = localStorage.getItem(KEY);
+    if (!stored) { localStorage.setItem(KEY, Date.now().toString()); return 1; }
+    return Math.max(1, Math.floor((Date.now() - parseInt(stored)) / 86400000) + 1);
+  } catch { return 1; }
+}
+
+/* ── Profile modal ── */
+function openProfile() {
+  statDaysEl && (statDaysEl.textContent = getDaysCount());
+  statMsgsEl && (statMsgsEl.textContent = totalMessages);
+  profileMoodLbl && (profileMoodLbl.textContent = MOOD_LABELS[currentMood] || MOOD_LABELS.casual);
+  profileOverlay.removeAttribute('aria-hidden');
+  profileOverlay.removeAttribute('hidden');
+  // next frame so display:none → display:flex transition fires
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => profileOverlay.classList.add('visible'));
+  });
+  document.body.style.overflow = 'hidden';
+}
+
+function closeProfile() {
+  profileOverlay.classList.remove('visible');
+  profileOverlay.setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = '';
+  // re-hide after transition
+  profileOverlay.addEventListener('transitionend', () => {
+    if (!profileOverlay.classList.contains('visible')) {
+      profileOverlay.style.display = 'none';
+      profileOverlay.style.display = '';
+    }
+  }, { once: true });
+}
+
+/* ── Update mood everywhere ── */
+function updateProfileMood(mood) {
+  currentMood = mood;
+  if (profileMoodLbl) {
+    profileMoodLbl.textContent = MOOD_LABELS[mood] || MOOD_LABELS.casual;
+  }
+}
+
+/* ── Quick replies ── */
+function showQuickReplies(mood) {
+  const chips = QUICK_REPLIES[mood] || QUICK_REPLIES.casual;
+  quickRepliesEl.innerHTML = '';
+  chips.forEach(text => {
+    const chip = document.createElement('button');
+    chip.className = 'qr-chip';
+    chip.textContent = text;
+    chip.addEventListener('click', () => {
+      hideQuickReplies();
+      msgInput.value = text;
+      sendBtn.disabled = false;
+      msgInput.focus();
+      // small delay so UI updates first
+      setTimeout(onSend, 60);
+    });
+    quickRepliesEl.appendChild(chip);
+  });
+  quickRepliesEl.classList.remove('hidden');
+}
+
+function hideQuickReplies() {
+  quickRepliesEl.classList.add('hidden');
+  quickRepliesEl.innerHTML = '';
+}
+
+/* ── Seen ticks ── */
+function markSeen() {
+  if (lastUserTickEl) {
+    lastUserTickEl.classList.add('seen');
+    lastUserTickEl = null;
+  }
+}
+
+/* ── Double-tap reaction ── */
+const tapTracker = new WeakMap(); // row → { count, timer }
+
+function attachReactionListener(row, bubble) {
+  bubble.addEventListener('click', () => {
+    const now = Date.now();
+    const entry = tapTracker.get(row) || { count: 0, lastTime: 0 };
+
+    if (now - entry.lastTime < 350) {
+      // Double-tap!
+      toggleReaction(row);
+      tapTracker.set(row, { count: 0, lastTime: 0 });
+    } else {
+      tapTracker.set(row, { count: 1, lastTime: now });
+    }
+  });
+}
+
+function toggleReaction(row) {
+  const existing = row.querySelector('.reaction-badge');
+  if (existing) {
+    existing.animate([{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(0)', opacity: 0 }],
+      { duration: 180, easing: 'ease-in', fill: 'forwards' })
+      .onfinish = () => existing.remove();
+  } else {
+    const badge = document.createElement('div');
+    badge.className = 'reaction-badge';
+    badge.textContent = '❤️';
+    badge.setAttribute('title', 'Double-tap to remove');
+    row.querySelector('.bubble').appendChild(badge);
+    vibrate(25);
+  }
+}
+
+/* ── Haptic feedback helper ── */
+function vibrate(ms = 20) {
+  try { navigator.vibrate && navigator.vibrate(ms); } catch {}
+}
+
+/* ── Scroll FAB ── */
+function updateScrollFab() {
+  const threshold = 80;
+  const atBottom  = chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight < threshold;
+  scrollFab.hidden = atBottom;
+}
+
+/* ── Character counter ── */
+function updateCharCounter() {
+  const len = msgInput.value.length;
+  if (len > 400) {
+    charCounter.textContent = `${len}/500`;
+    charCounter.classList.add('visible');
+    charCounter.classList.toggle('warning', len > 460);
+  } else {
+    charCounter.classList.remove('visible', 'warning');
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────
+   10. MAIN REPLY ENGINE
+   ─────────────────────────────────────────────────────────────── */
 async function generateReply(userText) {
   lock(true);
+  hideQuickReplies();
 
   const mood    = detectMood(userText);
   const matches = findMatches(userText, memory);
 
   if (matches.length > 0) {
-    // ── Dataset hit ──
     const selected  = selectBest(matches);
     const responses = injectMoodFlair([...selected.output], mood);
-
-    // Brief pause before first reply (feels human)
     await wait(260 + Math.random() * 340);
     await deliver(responses, 'dataset', mood);
-
   } else {
-    // ── AI fallback ──
     await callAI(userText, mood);
   }
+
+  /* post-delivery hooks */
+  markSeen();
+  updateProfileMood(mood);
+  showQuickReplies(mood);
 
   lock(false);
 }
 
 /* ────────────────────────────────────────────────────────────────
-   10. AI FALLBACK
+   11. AI FALLBACK
    ─────────────────────────────────────────────────────────────── */
-
-/** Fallback messages if the API is completely unreachable */
 const FALLBACK_SHRUG = [
-  ['Hn 😑'],
-  ['Hmm'],
-  ['Hn', 'Ruk'],
-  ['😒'],
-  ['Hn bhai'],
+  ['Hn 😑'], ['Hmm'], ['Hn', 'Ruk'], ['😒'], ['Hn bhai'],
 ];
 
-/**
- * Call /api/ask with memory context and receive multi-message array.
- * @param {string} userText
- * @param {string} mood
- */
 async function callAI(userText, mood) {
   try {
     setTyping(true);
@@ -598,7 +635,7 @@ async function callAI(userText, mood) {
     const res = await fetch('/api/ask', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
+      body: JSON.stringify({
         message: userText,
         memory:  memContext(),
         mood,
@@ -610,8 +647,6 @@ async function callAI(userText, mood) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = await res.json();
-
-    // API returns { replies: string[] } — fall back to legacy { reply: string }
     const messages = Array.isArray(data.replies)
       ? data.replies
       : String(data.reply ?? 'Hn 😑').split('\n').map(s => s.trim()).filter(Boolean);
@@ -626,37 +661,33 @@ async function callAI(userText, mood) {
 }
 
 /* ────────────────────────────────────────────────────────────────
-   11. EVENT WIRING
+   12. EVENT WIRING
    ─────────────────────────────────────────────────────────────── */
 
-/** Handle send action */
+/* ── Send ── */
 async function onSend() {
   if (busy) return;
-
   const text = msgInput.value.trim();
   if (!text) return;
 
   msgInput.value = '';
   sendBtn.disabled = true;
+  updateCharCounter();
+  vibrate(15);
 
-  // Render user bubble immediately
   renderBubble(text, 'user');
   memAdd('user', text);
 
-  // Wait for dataset if still loading
   if (!dataReady) {
     await new Promise(resolve => {
       const t = setInterval(() => { if (dataReady) { clearInterval(t); resolve(); } }, 80);
     });
   }
-
   await generateReply(text);
 }
 
-// Send button click
 sendBtn.addEventListener('click', onSend);
 
-// Enter key (no shift)
 msgInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -664,18 +695,42 @@ msgInput.addEventListener('keydown', e => {
   }
 });
 
-// Enable / disable send button based on input
 msgInput.addEventListener('input', () => {
   sendBtn.disabled = busy || !msgInput.value.trim();
+  updateCharCounter();
+  if (msgInput.value.length > 0) hideQuickReplies();
 });
 
-// Clear chat
+/* ── Clear chat ── */
 clearBtn.addEventListener('click', () => {
+  vibrate(30);
   const dateDivider = chatBox.querySelector('.date-chip');
   chatBox.innerHTML = '';
   if (dateDivider) chatBox.appendChild(dateDivider);
-  memory = [];
-  lastSenderRole = null;
+  memory          = [];
+  lastSenderRole  = null;
+  lastUserTickEl  = null;
+  totalMessages   = 0;
+  statMsgsEl && (statMsgsEl.textContent = 0);
+  hideQuickReplies();
+});
+
+/* ── Profile modal ── */
+avatarBtn.addEventListener('click', openProfile);
+profileCloseBtn.addEventListener('click', closeProfile);
+profileOverlay.addEventListener('click', e => {
+  if (e.target === profileOverlay) closeProfile();
+});
+// Close on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && profileOverlay.classList.contains('visible')) closeProfile();
+});
+
+/* ── Scroll FAB ── */
+chatBox.addEventListener('scroll', updateScrollFab, { passive: true });
+scrollFab.addEventListener('click', () => {
+  scrollDown();
+  vibrate(15);
 });
 
 /* ────────────────────────────────────────────────────────────────
@@ -683,3 +738,4 @@ clearBtn.addEventListener('click', () => {
    ─────────────────────────────────────────────────────────────── */
 loadDataset();
 msgInput.focus();
+statDaysEl && (statDaysEl.textContent = getDaysCount());

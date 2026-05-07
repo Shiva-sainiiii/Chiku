@@ -3,28 +3,94 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#0e0e17" />
-  <title>Shanu AI 💬</title>
+  <meta name="theme-color" content="#0d0b11" />
+  <title>Chiku 💌</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link
-    href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap"
-    rel="stylesheet"
-  />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,600&family=Nunito:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
-
 <body>
 
-  <!-- ═══════════════ HEADER ═══════════════ -->
+  <!-- ══════════════════════════════════════
+       PROFILE MODAL
+  ══════════════════════════════════════ -->
+  <div id="profile-overlay" class="profile-overlay" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="profile-card" id="profile-card">
+
+      <!-- Handle bar & close -->
+      <div class="card-handle"></div>
+      <button class="profile-close" id="profile-close" aria-label="Close profile">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+
+      <!-- Avatar ring -->
+      <div class="profile-glow-ring">
+        <div class="profile-big-avatar">🦋</div>
+      </div>
+
+      <h2 class="profile-name">Chiku</h2>
+      <p class="profile-sub">she/her &nbsp;·&nbsp; Mumbai, India 🌸</p>
+
+      <!-- Live mood chip -->
+      <div class="profile-mood-row">
+        <span class="mood-dot-live"></span>
+        <span id="profile-mood-label">Feeling good today ✨</span>
+      </div>
+
+      <!-- Stats -->
+      <div class="profile-stats-row">
+        <div class="pstat">
+          <span class="pstat-num" id="stat-msgs">0</span>
+          <span class="pstat-label">messages</span>
+        </div>
+        <div class="pstat-sep"></div>
+        <div class="pstat">
+          <span class="pstat-num" id="stat-days">1</span>
+          <span class="pstat-label">day together</span>
+        </div>
+        <div class="pstat-sep"></div>
+        <div class="pstat">
+          <span class="pstat-num">∞</span>
+          <span class="pstat-label">moments</span>
+        </div>
+      </div>
+
+      <!-- Bio -->
+      <blockquote class="profile-bio">
+        "Thodi si attitude, thoda sa pyaar.<br>Real wali baat karo 🦋"
+      </blockquote>
+
+      <!-- Interests -->
+      <div class="profile-tags">
+        <span class="ptag">🎵 music</span>
+        <span class="ptag">☕ chai addict</span>
+        <span class="ptag">😴 sleepy girl</span>
+        <span class="ptag">🌙 night owl</span>
+        <span class="ptag">📱 always online</span>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       HEADER
+  ══════════════════════════════════════ -->
   <header class="header">
     <div class="header-left">
-      <div class="avatar-wrap">
-        <div class="avatar">🦋</div>
-        <div class="online-ring"></div>
-      </div>
+      <button class="avatar-btn" id="avatar-btn" aria-label="View Chiku's profile">
+        <div class="avatar-wrap">
+          <div class="avatar">🦋</div>
+          <div class="online-ring"></div>
+        </div>
+      </button>
       <div class="header-info">
-        <h1 class="header-name">Miss P.</h1>
-        <span class="header-status" id="header-status">Online</span>
+        <h1 class="header-name">Chiku</h1>
+        <span class="header-status" id="header-status">
+          <span class="status-pulse"></span>Online
+        </span>
       </div>
     </div>
     <div class="header-right">
@@ -39,13 +105,26 @@
     </div>
   </header>
 
-  <!-- ═══════════════ CHAT AREA ═══════════════ -->
+  <!-- ══════════════════════════════════════
+       CHAT AREA
+  ══════════════════════════════════════ -->
   <main id="chat-box" role="log" aria-label="Conversation" aria-live="polite">
     <div class="date-chip"><span>Today</span></div>
   </main>
 
-  <!-- ═══════════════ TYPING INDICATOR ═══════════════ -->
-  <div id="typing-wrap" class="typing-wrap hidden" aria-label="Miss P. is typing" aria-live="polite">
+  <!-- ══════════════════════════════════════
+       SCROLL-TO-BOTTOM FAB
+  ══════════════════════════════════════ -->
+  <button id="scroll-fab" class="scroll-fab" aria-label="Scroll to bottom" hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="6 9 12 15 18 9"/>
+    </svg>
+  </button>
+
+  <!-- ══════════════════════════════════════
+       TYPING INDICATOR
+  ══════════════════════════════════════ -->
+  <div id="typing-wrap" class="typing-wrap hidden" aria-label="Chiku is typing" aria-live="polite">
     <div class="typing-avatar">🦋</div>
     <div class="typing-bubble">
       <span class="dot"></span>
@@ -54,21 +133,29 @@
     </div>
   </div>
 
-  <!-- ═══════════════ INPUT AREA ═══════════════ -->
+  <!-- ══════════════════════════════════════
+       QUICK REPLIES
+  ══════════════════════════════════════ -->
+  <div id="quick-replies" class="quick-replies hidden" role="group" aria-label="Quick reply suggestions"></div>
+
+  <!-- ══════════════════════════════════════
+       INPUT BAR
+  ══════════════════════════════════════ -->
   <footer class="input-bar">
     <div class="input-field-wrap">
       <input
         type="text"
         id="msg-input"
-        placeholder="Type a message…"
+        placeholder="Say something…"
         autocomplete="off"
         autocorrect="off"
         spellcheck="false"
         maxlength="500"
         aria-label="Message input"
       />
+      <span id="char-counter" class="char-counter"></span>
     </div>
-    <button id="send-btn" aria-label="Send" disabled>
+    <button id="send-btn" aria-label="Send message" disabled>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <line x1="22" y1="2" x2="11" y2="13"/>
         <polygon points="22 2 15 22 11 13 2 9 22 2"/>
