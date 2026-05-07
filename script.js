@@ -412,7 +412,8 @@ let busy = false;
 function lock(on) {
   busy = on;
   sendBtn.disabled = on || !msgInput.value.trim();
-  msgInput.disabled = on;
+  // Do NOT disable the input — disabling it closes the mobile keyboard
+  msgInput.readOnly = on;
   if (!on) msgInput.focus();
 }
 
@@ -603,7 +604,10 @@ async function generateReply(userText) {
   const mood    = detectMood(userText);
   const matches = findMatches(userText, memory);
 
-  if (matches.length > 0) {
+  // 60% real dataset, 40% AI — even when dataset matches exist
+  const useDataset = matches.length > 0 && Math.random() < 0.60;
+
+  if (useDataset) {
     const selected  = selectBest(matches);
     const responses = injectMoodFlair([...selected.output], mood);
     await wait(80 + Math.random() * 120);
@@ -674,6 +678,7 @@ async function onSend() {
   sendBtn.disabled = true;
   updateCharCounter();
   vibrate(15);
+  msgInput.focus(); // keep mobile keyboard open
 
   renderBubble(text, 'user');
   memAdd('user', text);
