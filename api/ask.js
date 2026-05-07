@@ -194,7 +194,7 @@ export default async function handler(req, res) {
 
   if (!process.env.OPENROUTER_API_KEY) {
     console.error('[ShanuAI] Missing OPENROUTER_API_KEY');
-    return res.status(200).json({ replies: ['Hn 😑'] });
+    return res.status(200).json({ replies: ['error 200'] });
   }
 
   try {
@@ -284,7 +284,7 @@ export default async function handler(req, res) {
       raw = await callModel();
     }
 
-    if (!raw) return res.status(200).json({ replies: ['Hn 😑'] });
+    if (!raw) return res.status(200).json({ replies: ['error 200'] });
 
     const replies = parseReplies(raw);
     if (!replies.length) return res.status(200).json({ replies: ['Hn 😑'] });
@@ -293,6 +293,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error('[ShanuAI] Handler exception:', err);
-    return res.status(200).json({ replies: ['Hn 😑'] });
+    return res.status(200).json({ replies: ['error 200'] });
   }
 }
