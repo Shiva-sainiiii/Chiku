@@ -29,11 +29,11 @@ const CFG = {
   VARIATION_FLOOR:    0.72,
 
   CHARS_PER_MS:       22,
-  TYPE_DELAY_MIN:     380,
-  TYPE_DELAY_MAX:     2100,
-  TYPE_VARIANCE:      0.28,
-  INTER_MSG_PAUSE:    300,
-  FALLBACK_DELAY:     800,
+  TYPE_DELAY_MIN:     180,   // ↓ was 380
+  TYPE_DELAY_MAX:     900,   // ↓ was 2100
+  TYPE_VARIANCE:      0.20,  // ↓ was 0.28
+  INTER_MSG_PAUSE:    180,   // ↓ was 300
+  FALLBACK_DELAY:     400,   // ↓ was 800
 };
 
 /* ────────────────────────────────────────────────────────────────
@@ -606,7 +606,7 @@ async function generateReply(userText) {
   if (matches.length > 0) {
     const selected  = selectBest(matches);
     const responses = injectMoodFlair([...selected.output], mood);
-    await wait(260 + Math.random() * 340);
+    await wait(80 + Math.random() * 120);
     await deliver(responses, 'dataset', mood);
   } else {
     await callAI(userText, mood);
