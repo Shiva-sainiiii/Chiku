@@ -54,8 +54,8 @@
   --ease:            cubic-bezier(0.4, 0, 0.2, 1);
   --ease-bounce:     cubic-bezier(0.34, 1.56, 0.64, 1);
   --ease-spring:     cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  --shadow-bubble:   0 2px 10px rgba(0, 0, 0, 0.38);
-  --shadow-user:     0 2px 10px rgba(0, 0, 0, 0.35);
+  --shadow-bubble:   0 2px 14px rgba(0, 0, 0, 0.42);
+  --shadow-user:     0 4px 20px rgba(219, 39, 119, 0.38);
 }
 
 /* ── HTML / BODY ── */
@@ -65,8 +65,8 @@ body {
   font-family: var(--font);
   background: var(--bg);
   color: var(--text-1);
-  height: 100%;       /* fallback for older browsers */
-  height: 100dvh;     /* dynamic viewport — must come AFTER the fallback */
+  height: 100dvh;
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -75,14 +75,15 @@ body {
   position: relative;
 }
 
-/* Ambient background glow — subtle, no bright pink */
+/* Ambient background glow */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(ellipse 70% 50% at 15% 0%,   rgba(167, 139, 250, 0.06) 0%, transparent 60%),
-    radial-gradient(ellipse 50% 40% at 90% 100%,  rgba(167, 139, 250, 0.05) 0%, transparent 55%);
+    radial-gradient(ellipse 80% 60% at 15% 0%,   rgba(244, 114, 182, 0.08) 0%, transparent 55%),
+    radial-gradient(ellipse 60% 45% at 90% 100%,  rgba(167, 139, 250, 0.07) 0%, transparent 50%),
+    radial-gradient(ellipse 35% 25% at 50% 55%,   rgba(219,  39, 119, 0.03) 0%, transparent 60%);
   pointer-events: none;
   z-index: 0;
 }
@@ -336,15 +337,14 @@ body::after {
    HEADER
 ══════════════════════════════════════════ */
 .header {
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 20;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 10px 16px 10px 12px;
-  background: rgba(13, 11, 17, 0.96);
+  background: rgba(13, 11, 17, 0.92);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border-bottom: 1px solid var(--border);
@@ -378,7 +378,7 @@ body::after {
   font-size: 22px;
   box-shadow:
     0 0 0 2.5px var(--bg),
-    0 0 0 4px rgba(255, 255, 255, 0.10);
+    0 0 0 4px rgba(244, 114, 182, 0.3);
 }
 
 .online-ring {
@@ -548,7 +548,7 @@ body::after {
   box-shadow: var(--shadow-user);
 }
 .msg-row.user .bubble:hover {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.40);
+  box-shadow: 0 6px 24px rgba(219, 39, 119, 0.48);
 }
 
 /* AI bubble */
@@ -773,9 +773,9 @@ body::after {
 .qr-chip:nth-child(4) { animation-delay: 0.18s; }
 
 .qr-chip:hover {
-  background: rgba(244, 114, 182, 0.14);
-  border-color: rgba(244, 114, 182, 0.35);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  background: rgba(244, 114, 182, 0.16);
+  border-color: rgba(244, 114, 182, 0.44);
+  box-shadow: 0 2px 12px rgba(244, 114, 182, 0.15);
 }
 .qr-chip:active { transform: scale(0.94); }
 
@@ -847,17 +847,17 @@ body::after {
   color: #fff;
   cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.30);
+  box-shadow: 0 4px 18px rgba(219, 39, 119, 0.42);
   transition: transform 0.18s var(--ease-bounce), box-shadow 0.18s var(--ease), opacity 0.2s var(--ease);
 }
 #send-btn svg { width: 17px; height: 17px; }
 #send-btn:not(:disabled):hover {
   transform: scale(1.08);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.40);
+  box-shadow: 0 6px 24px rgba(219, 39, 119, 0.58);
 }
 #send-btn:not(:disabled):active {
   transform: scale(0.92);
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.20);
+  box-shadow: 0 2px 8px rgba(219, 39, 119, 0.3);
 }
 #send-btn:disabled {
   opacity: 0.28;
